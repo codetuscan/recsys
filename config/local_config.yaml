@@ -11,7 +11,7 @@ data:
 
 # Model configuration
 model:
-  model_type: "bpr"
+  model_name: "bpr"
   embedding_dim: 64
   learning_rate: 0.001
   regularization: 0.01
