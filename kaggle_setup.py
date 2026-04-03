@@ -22,7 +22,21 @@ print("="*60)
 
 # Minimal config
 class Config:
-    data_path = Path('/kaggle/input/movielens-datasets') if Path('/kaggle/input/movielens-datasets').exists() else Path('/kaggle/working/ml-32m')
+    # Check multiple paths for MovieLens data
+    data_path = None
+    for p in [
+        Path('/kaggle/input/datasets/justsahil/movielens-32m/ml-32m'),  # Added dataset
+        Path('/kaggle/input/movielens-datasets'),
+        Path('/kaggle/input/movielens32m'),
+        Path('/kaggle/working/ml-32m'),
+    ]:
+        if (p / 'ratings.csv').exists():
+            data_path = p
+            break
+
+    if data_path is None:
+        data_path = Path('/kaggle/input/datasets/justsahil/movielens-32m/ml-32m')
+
     model_name = 'purs'
     epochs = 5
     batch_size = 64
