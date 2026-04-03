@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: recsys
+Version: 0.1.0
+Summary: GPU-accelerated recommender system for breaking filter bubbles
+Author: Your Name
+Requires-Python: >=3.10
+Requires-Dist: numpy>=2.0
+Requires-Dist: pandas>=3.0
+Requires-Dist: torch>=2.0
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: scikit-learn>=1.0
+Requires-Dist: scipy>=1.17
+Requires-Dist: matplotlib>=3.0
+Requires-Dist: seaborn>=0.13
+Requires-Dist: tqdm>=4.0
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

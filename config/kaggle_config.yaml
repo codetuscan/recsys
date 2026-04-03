@@ -1,0 +1,34 @@
+# Data configuration
+data:
+  dataset_name: "movielens-32m"
+  min_interactions_per_user: 5
+  min_interactions_per_item: 5
+  test_ratio: 0.2
+  negative_samples_train: 1
+  negative_samples_eval: 99
+  use_temporal_split: true
+  data_subset: null  # Use full dataset on Kaggle
+
+# Model configuration
+model:
+  model_type: "bpr"
+  embedding_dim: 64
+  learning_rate: 0.001
+  regularization: 0.01
+  batch_size: 4096  # Larger batch size for GPU
+  epochs: 20
+  num_workers: 4
+  pin_memory: true  # GPU acceleration
+
+# Experiment configuration
+experiment:
+  experiment_name: "kaggle_bpr_baseline"
+  seed: 42
+  device: "auto"
+  checkpoint_every: 2
+  eval_every: 1
+  k_values: [5, 10, 20]
+  early_stopping_patience: 5
+  verbose: true
+
+environment: "kaggle"

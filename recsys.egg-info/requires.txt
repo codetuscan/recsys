@@ -1,0 +1,9 @@
+numpy>=2.0
+pandas>=3.0
+torch>=2.0
+PyYAML>=6.0
+scikit-learn>=1.0
+scipy>=1.17
+matplotlib>=3.0
+seaborn>=0.13
+tqdm>=4.0

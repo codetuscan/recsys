@@ -1,0 +1,34 @@
+# Data configuration
+data:
+  dataset_name: "movielens-32m"
+  min_interactions_per_user: 5
+  min_interactions_per_item: 5
+  test_ratio: 0.2
+  negative_samples_train: 1
+  negative_samples_eval: 99
+  use_temporal_split: true
+  data_subset: 0.01  # Use 1% of data for local testing
+
+# Model configuration
+model:
+  model_type: "bpr"
+  embedding_dim: 64
+  learning_rate: 0.001
+  regularization: 0.01
+  batch_size: 1024  # Smaller for local testing
+  epochs: 5  # Fewer epochs for local testing
+  num_workers: 2
+  pin_memory: false  # May not have GPU locally
+
+# Experiment configuration
+experiment:
+  experiment_name: "local_test"
+  seed: 42
+  device: "auto"
+  checkpoint_every: 2
+  eval_every: 1
+  k_values: [5, 10, 20]
+  early_stopping_patience: 5
+  verbose: true
+
+environment: "local"
