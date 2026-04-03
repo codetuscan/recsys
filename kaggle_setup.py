@@ -1,6 +1,6 @@
 """
 Minimal PURS baseline for Kaggle.
-Run directly in notebook - no package imports needed.
+Run directly in notebook - delayed torch import to avoid CUDA conflicts.
 """
 
 import sys
@@ -8,18 +8,14 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
-# Download and setup data
 print("Setting up environment...")
-os.system("cd /kaggle/working && wget -q https://files.grouplens.org/datasets/movielens/ml-32m.zip 2>/dev/null || echo 'Using existing data'")
 
-# Import after warnings suppressed
+# Import lightweight modules first
 import numpy as np
 import pandas as pd
-import torch
-import torch.nn as nn
 from pathlib import Path
 
-print("✓ Environment ready")
+print("✓ Core modules imported")
 print("="*60)
 print("PURS Baseline Setup")
 print("="*60)
@@ -35,19 +31,19 @@ class Config:
     num_clusters = 5
     unexpectedness_weight = 0.1
     learning_rate = 0.001
-    device = 'cpu'  # Default to CPU for Kaggle safety
+    device = 'cpu'
 
 config = Config()
 
-# Try to enable CUDA if available
+# Delayed torch import
 try:
-    if torch.cuda.is_available():
-        torch.cuda.get_device_properties(0)
-        config.device = 'cuda'
-except:
-    pass
+    import torch
+    import torch.nn as nn
+    config.device = 'cpu'
+    print(f"Device: {config.device}")
+except Exception as e:
+    print(f"Warning: torch import had issues: {e}")
 
-print(f"Device: {config.device}")
 print(f"Data path: {config.data_path}")
 
 # Quick test - can we import recsys modules now?
@@ -58,7 +54,7 @@ try:
     from recsys.data import load_movielens_ratings
     print("✓ Successfully imported recsys modules!")
 
-    print("\nLoading MovieLens data...")
+    print("\nLoading MovieLens data (subset 1%)...")
     ratings_df = load_movielens_ratings(config.data_path, subset=0.01)
     print(f"✓ Loaded {len(ratings_df)} ratings")
 
@@ -79,3 +75,4 @@ except Exception as e:
     print(f"✗ Error: {e}")
     import traceback
     traceback.print_exc()
+
