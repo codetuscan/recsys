@@ -35,9 +35,18 @@ class Config:
     num_clusters = 5
     unexpectedness_weight = 0.1
     learning_rate = 0.001
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = 'cpu'  # Default to CPU for Kaggle safety
 
 config = Config()
+
+# Try to enable CUDA if available
+try:
+    if torch.cuda.is_available():
+        torch.cuda.get_device_properties(0)
+        config.device = 'cuda'
+except:
+    pass
+
 print(f"Device: {config.device}")
 print(f"Data path: {config.data_path}")
 
