@@ -74,10 +74,12 @@ try:
 
     print("\nInitializing PURS model...")
     model = PURS(
+        num_users=ratings_df['userId'].max() + 1,
         num_items=ratings_df['movieId'].max() + 1,
         embedding_dim=32,
         gru_hidden_dim=config.gru_hidden_dim,
         num_clusters=config.num_clusters,
+        unexpectedness_weight=config.unexpectedness_weight,
     ).to(config.device)
     print(f"✓ Model initialized with {sum(p.numel() for p in model.parameters()):,} parameters")
 
