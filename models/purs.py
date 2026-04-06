@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.cluster import MeanShift
+from sklearn.cluster import estimate_bandwidth
 from typing import Dict, Tuple, Optional
 from collections import defaultdict
 
@@ -145,6 +146,7 @@ class PURS(nn.Module):
         self.item_embeddings_cached = None
         self.clusters_cached = None  # Will store cluster centroids per user
         self.cluster_sizes_cached = None
+        self._cluster_cache: Dict[tuple, Tuple[np.ndarray, np.ndarray]] = {}
 
     def compute_user_clusters(self, user_history: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -165,6 +167,12 @@ class PURS(nn.Module):
             # Empty history: return single "center" cluster
             return np.array([[0.0] * self.embedding_dim]), np.array([1])
 
+        # Avoid recomputing clusters for repeated histories.
+        history_key = tuple(valid_items.tolist())
+        cached = self._cluster_cache.get(history_key)
+        if cached is not None:
+            return cached
+
         # Get embeddings for valid items
         valid_items_tensor = torch.LongTensor(valid_items).to(self.item_embedding.weight.device)
         history_embeddings = self.item_embedding(valid_items_tensor).detach().cpu().numpy()
@@ -172,7 +180,21 @@ class PURS(nn.Module):
         # Mean Shift clustering
         if len(valid_items) > 1:
             try:
-                ms = MeanShift(bandwidth=None)  # Auto bandwidth estimation
+                # Some histories collapse to near-identical vectors where automatic
+                # bandwidth estimation returns 0.0 and MeanShift fails.
+                bandwidth = estimate_bandwidth(
+                    history_embeddings,
+                    quantile=0.2,
+                    n_samples=min(500, len(history_embeddings)),
+                )
+
+                if not np.isfinite(bandwidth) or bandwidth <= 1e-8:
+                    centroid = np.mean(history_embeddings, axis=0, keepdims=True)
+                    result = (centroid, np.array([len(valid_items)]))
+                    self._cluster_cache[history_key] = result
+                    return result
+
+                ms = MeanShift(bandwidth=bandwidth, bin_seeding=True)
                 ms.fit(history_embeddings)
                 centroids = ms.cluster_centers_
                 labels = ms.labels_
@@ -181,14 +203,20 @@ class PURS(nn.Module):
                 unique_labels = np.unique(labels)
                 cluster_sizes = np.array([np.sum(labels == label) for label in unique_labels])
 
-                return centroids, cluster_sizes
+                result = (centroids, cluster_sizes)
+                self._cluster_cache[history_key] = result
+                return result
             except Exception as e:
                 # Fallback: single cluster (mean of all items)
                 print(f"Mean Shift clustering failed: {e}. Using single cluster.")
-                return np.Mean(history_embeddings, axis=0, keepdims=True), np.array([len(valid_items)])
+                result = (np.mean(history_embeddings, axis=0, keepdims=True), np.array([len(valid_items)]))
+                self._cluster_cache[history_key] = result
+                return result
         else:
             # Single item: single cluster
-            return history_embeddings, np.array([1])
+            result = (history_embeddings, np.array([1]))
+            self._cluster_cache[history_key] = result
+            return result
 
     def compute_unexpectedness(self, candidate_embedding: np.ndarray, centroids: np.ndarray, cluster_sizes: np.ndarray) -> float:
         """

@@ -26,8 +26,12 @@ def main():
     print("Loading config...")
     config = load_config('kaggle')
     config.model.model_name = 'purs'
-    config.train.epochs = 10
-    config.train.batch_size = 64
+    # Quick debug profile for Kaggle notebooks.
+    config.data.data_subset = 0.02
+    config.model.epochs = 1
+    config.model.batch_size = 256
+    config.model.num_workers = 2
+    config.experiment.experiment_name = "kaggle_purs_quick_debug"
 
     print(f"Config: {config}")
     print("\nStarting experiment runner...")
