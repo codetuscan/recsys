@@ -168,13 +168,39 @@ def load_movielens_1m_movies(data_path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     print(f"Loading movies from {movies_file}...")
-    movies = pd.read_csv(
-        movies_file,
-        sep="::",
-        engine="python",
-        names=["movieId", "title", "genres"],
-        dtype={"movieId": "int32", "title": "string", "genres": "string"},
-    )
+
+    # MovieLens-1M movies.dat commonly uses latin-1 encoded titles (for example, accented chars).
+    # Try utf-8 first, then fallback to latin-1/cp1252 for portability across Kaggle datasets.
+    encodings_to_try = ["utf-8", "latin-1", "cp1252"]
+    last_error = None
+    movies = None
+
+    for encoding in encodings_to_try:
+        try:
+            movies = pd.read_csv(
+                movies_file,
+                sep="::",
+                engine="python",
+                names=["movieId", "title", "genres"],
+                dtype={"movieId": "int32", "title": "string", "genres": "string"},
+                encoding=encoding,
+            )
+            if encoding != "utf-8":
+                print(f"Read movies.dat with fallback encoding: {encoding}")
+            break
+        except UnicodeDecodeError as exc:
+            last_error = exc
+
+    if movies is None:
+        raise UnicodeDecodeError(
+            last_error.encoding if last_error is not None else "utf-8",
+            last_error.object if last_error is not None else b"",
+            last_error.start if last_error is not None else 0,
+            last_error.end if last_error is not None else 1,
+            "Failed to decode movies.dat with tried encodings: "
+            + ", ".join(encodings_to_try),
+        )
+
     print(f"Loaded {len(movies):,} movies")
 
     return movies
