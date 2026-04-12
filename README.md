@@ -72,12 +72,13 @@ recsys/
 │
 ├── experiments/
 │   ├── test_popularity.py
-│   ├── train_bpr.py
-│   └── evaluate_bpr.py
+│   ├── experiment_runner.py
+│   └── preprocess_ml1m.py
 │
 ├── models/
 │   ├── popularity.py
-│   └── bpr_mf.py
+│   ├── purs.py
+│   └── purs_train.py
 │
 └── requirements.txt
 ```
@@ -181,11 +182,9 @@ Purpose:
 
 ---
 
-### 2. BPR-MF (Bayesian Personalized Ranking with Matrix Factorization)
+### 2. PURS (Personalized Unexpected Recommender System)
 
-This model is designed for **implicit feedback recommendation tasks**.
-
-Instead of predicting ratings, BPR optimizes ranking.
+This model is designed to optimize recommendation utility by combining relevance and unexpectedness.
 
 Training objective:
 
@@ -199,7 +198,7 @@ Training samples consist of triplets:
 (user, positive item, negative item)
 ```
 
-This model is widely used as a baseline in recommender system research.
+PURS is the current primary baseline in this repository.
 
 ---
 
@@ -218,7 +217,7 @@ This simulates real-world recommendation scenarios where the model predicts **th
 
 # 8. Problems Discovered During Implementation
 
-During BPR implementation, several issues were identified.
+During early baseline implementation, several issues were identified.
 
 ## Problem 1: Negative Sampling Error
 
@@ -259,462 +258,194 @@ users × interactions
 ```
 
 This results in millions of updates.
+# Unexpectedness-Aware Sequential Recommender
 
----
+This repository supports a research workflow for an unexpectedness-aware sequential recommender system, currently centered on MovieLens-1M and PURS as the active model path.
 
-## Proposed Solution: Mini-Batch Sampling
+## Part 1: What We Have Done So Far (with Logic)
 
-Instead of updating per interaction, we will sample training batches:
+### 1. Defined a clear research objective
+We fixed the core objective as balancing relevance and unexpectedness, because a pure relevance objective reinforces filter bubbles and hurts discovery.
 
-Example batch:
+### 2. Switched to MovieLens-1M for the current implementation phase
+We moved practical development to MovieLens-1M, because Kaggle free-tier iteration requires shorter experiment cycles and predictable memory/runtime.
 
-```
-(u,i,j)
-(u,i,j)
-(u,i,j)
-...
-```
+### 3. Standardized configuration around this objective
+We updated defaults to MovieLens-1M and PURS-only configuration, because reducing branching in early development lowers integration bugs and accelerates validation.
 
-Batch size example:
+### 4. Added dataset-aware loading infrastructure
+We implemented loaders that handle both ML-1M and ML-32M formats, because we need a stable migration path while still allowing scale-up later.
 
-```
-1024 samples
-```
+### 5. Implemented one-time sequential preprocessing primitives
+We added:
+1. k-core filtering (min user/item interactions)
+2. user/item contiguous reindexing
+3. chronological ordering
+4. temporal train/val/test splitting (last=test, second-last=val)
+5. log-scale time-gap buckets
 
-Advantages:
+We did this because sequential recommendation quality depends on correct temporal ordering and consistent ID space.
 
-* faster training
-* GPU compatible
-* standard approach in modern recommender systems
+### 6. Added preprocessing artifact persistence
+We save train/val/test splits, encoder, histories, and metadata to disk, because one-time preprocessing prevents repeated expensive work and guarantees reproducibility across model runs.
 
----
+### 7. Added a dedicated preprocessing entrypoint
+We created a standalone preprocessing script for ML-1M, because data preparation must be runnable independently from training for clean experiment management.
 
-# 9. Evaluation Problem
+### 8. Removed BPR from the active code path
+We removed BPR models/scripts and made runner/model exports PURS-only, because your immediate research track is unexpectedness-aware sequential modeling and BPR branches were adding maintenance overhead.
 
-Current evaluation ranks recommendations across **all items**.
+### 9. Refactored generic training dataset naming
+We renamed the training dataset abstraction from BPR-specific naming to pairwise naming, because the negative sampling pattern is reusable across methods and should not be tied to a removed baseline.
 
-This is computationally expensive and biased.
+### 10. Updated notebook and documentation alignment
+We updated Kaggle notebook framing and repository docs to PURS + ML-1M, because documentation must match executable code to avoid experiment drift.
 
-Standard recommender evaluation instead uses **candidate ranking evaluation**.
+### 11. Current status after Part 1
+What works now:
+1. ML-1M loading and environment-aware paths
+2. Sequential preprocessing and artifact generation
+3. PURS training/evaluation pipeline in runner
+4. Kaggle notebook flow aligned to PURS
 
----
+What is intentionally not completed yet:
+1. SASRec baseline
+2. NOVA-inspired non-invasive gated attention model
+3. MeanShift-based unexpectedness lookup table for all user-item pairs
+4. Unified three-model comparison report
 
-# 10. Candidate Generation + Negative Sampling
+## Part 2: Complete Future Implementation Plan (End-to-End)
+
+This section is the full roadmap to finish implementation of the project, from current code state to final three-model comparison.
 
-Standard evaluation protocol:
+### Phase 1: Lock the experimental contract
+1. Finalize immutable experiment rules: dataset split policy, sequence length, negative sampling, and target metrics.
+Why: if these rules change mid-way, model comparisons become invalid.
+Output: one frozen protocol document used by every run.
 
-```
-candidate set =
-1 positive item
-+ N negative items
-```
+2. Freeze seeds and run settings for reproducibility.
+Why: we need to separate model improvements from randomness.
+Output: fixed seed policy and reproducible run template.
 
-Example:
+### Phase 2: Complete data foundation
+1. Finalize one-time preprocessing artifacts for ML-1M.
+Why: all models must train on exactly the same processed data.
+Output: train, val, test splits, encoder, sequence metadata, and history artifacts.
+
+2. Add artifact versioning and manifest metadata.
+Why: we must always know which preprocessing settings produced each result.
+Output: artifact manifest with configuration hash, timestamp, and parameters.
+
+### Phase 3: Build unexpectedness infrastructure
+1. Choose and lock the item embedding backbone (for distance computation).
+Why: unexpectedness distance is only meaningful if embedding space is consistent.
+Output: item embedding checkpoint and embedding export.
+
+2. Run user-wise MeanShift on user history embeddings.
+Why: this defines each user's expected preference regions.
+Output: per-user cluster representation.
+
+3. Precompute unexpectedness distances for user-item scoring.
+Why: on-the-fly clustering/distance is too slow for repeated training and evaluation.
+Output: lookup artifact optimized for dataloader access.
+
+### Phase 4: Unify training/evaluation data interface
+1. Build one shared sequential dataset contract for all models.
+Why: model comparison is fair only when inputs and sampling policy are identical.
+Output: common dataloader outputs: items, ratings, time gaps, unexpectedness, positives, negatives.
+
+2. Enforce evaluation candidate protocol (1 positive + 99 negatives).
+Why: this is the paper-aligned ranking setup for all reported metrics.
+Output: single evaluation pipeline used by SASRec, PURS, and NOVA.
+
+### Phase 5: Implement SASRec baseline fully
+1. Implement SASRec model with the shared dataloader contract.
+Why: SASRec is the relevance-first sequential baseline needed to quantify gains from unexpectedness modeling.
+Output: trainable/evaluable SASRec module.
+
+2. Validate SASRec metrics and stability.
+Why: a weak baseline creates misleading conclusions.
+Output: stable baseline runs with metric logs.
+
+### Phase 6: Align and finalize PURS implementation
+1. Match PURS scoring exactly to chosen utility definition.
+Why: baseline must reflect the intended unexpectedness-aware objective, not an approximate variant.
+Output: validated PURS implementation with clear equation-code mapping.
+
+2. Verify PURS with the new shared pipeline.
+Why: all models must use identical data/eval mechanics.
+Output: PURS benchmark runs directly comparable to SASRec.
+
+### Phase 7: Implement NOVA-inspired model
+1. Build four-embedding gated fusion (item, rating, time gap, unexpectedness).
+Why: this is the core mechanism for multi-signal contextualization.
+Output: fused representation module.
+
+2. Enforce non-invasive attention rule: Q/K from fused representation, V from pure item embedding.
+Why: this preserves item semantic integrity while still leveraging side information.
+Output: custom attention layer with architectural constraint guaranteed in code.
+
+3. Integrate NOVA model into the shared trainer.
+Why: training logic must remain identical across models for fair comparison.
+Output: trainable/evaluable NOVA path in experiment runner.
+
+### Phase 8: Build robust experiment system
+1. Unify trainer, logger, checkpointing, and config handling for all three models.
+Why: mixed training code paths increase bugs and reduce reproducibility.
+Output: single experiment framework with model-specific hooks.
+
+2. Add resume/restart and failure-safe checkpoints.
+Why: Kaggle sessions are time-limited and can terminate unexpectedly.
+Output: resilient run pipeline.
+
+### Phase 9: Hyperparameter and ablation studies
+1. Run constrained hyperparameter search per model.
+Why: each architecture needs reasonable tuning before comparison.
+Output: best config per model under equal budget.
+
+2. Run ablations for NOVA components.
+Why: we need to prove which design components actually contribute.
+Output: ablation table for gate, rating, time-gap, unexpectedness, and non-invasive attention constraint.
+
+### Phase 10: Statistical validation and error analysis
+1. Repeat final runs with multiple seeds.
+Why: single-run improvements are not scientifically reliable.
+Output: mean and variance for each reported metric.
+
+2. Perform targeted failure analysis (user/item segments).
+Why: this explains where the model helps and where it fails.
+Output: qualitative and quantitative error analysis section.
+
+### Phase 11: Final reporting package
+1. Generate final comparison tables for SASRec, PURS, NOVA.
+Why: this is the core evidence for the research claim.
+Output: publication-ready model comparison results.
+
+2. Generate plots: training curves, metric trade-offs, and ablations.
+Why: visual evidence improves interpretability and paper clarity.
+Output: figure set aligned with final metrics.
+
+3. Export reproducible artifacts and run cards.
+Why: every reported number must be traceable to a config and checkpoint.
+Output: experiment cards, artifact index, and final result bundle.
+
+### Phase 12: Done criteria
+Implementation is complete when all conditions below are true:
+1. SASRec, PURS, and NOVA train and evaluate on the same pipeline.
+2. NOVA respects the non-invasive Q/K/V constraint in verified code.
+3. NDCG@10, Recall@10, and Unexpectedness@10 are reported for all models.
+4. Ablation and multi-seed stability results are available.
+5. Paper tables and figures are reproducible from saved artifacts.
+
+## Immediate execution order
+
+1. Freeze experiment contract and preprocessing manifest.
+2. Finalize unexpectedness lookup generation.
+3. Implement and validate SASRec baseline.
+4. Revalidate PURS under shared pipeline.
+5. Implement NOVA non-invasive model.
+6. Run benchmark, ablations, and multi-seed validation.
+7. Export final results for paper integration.
+
+This order is intentional: data and protocol first, model implementation second, scientific validation and reporting last.
 
-```
-1 ground truth
-+ 99 negatives
-```
-
-Total candidates:
-
-```
-100 items
-```
-
-The model ranks these candidates.
-
-Metrics are computed on the ranking.
-
-Advantages:
-
-* faster evaluation
-* unbiased comparison
-* standard in recommender system papers
-
----
-
-# 11. Current Experimental Pipeline
-
-Current system pipeline:
-
-```
-MovieLens dataset
-        ↓
-data preprocessing
-        ↓
-train/test split
-        ↓
-baseline models
-        ↓
-evaluation metrics
-```
-
----
-
-# 12. Planned Future Models
-
-After baselines are stable, the following models will be implemented.
-
-Sequential recommendation models:
-
-* GRU4Rec
-* SASRec
-* BERT4Rec
-
-Unexpectedness-aware models:
-
-* PURS
-* UIRS-GNN
-
-Final architecture (proposed):
-
-Transformer-based gated attention model combining:
-
-* relevance
-* unexpectedness
-* rating embeddings
-* time gap embeddings
-* preference stability
-
----
-
-# 13. Missing Data Preprocessing Step
-
-One mistake discovered during implementation:
-
-Proper preprocessing for recommender systems was not implemented initially.
-
-Required preprocessing includes:
-
-* consistent user/item encoding
-* filtering extremely sparse users/items
-* building user interaction histories
-* negative sampling pipelines
-
-This preprocessing layer will be added next.
-
----
-
-# 14. Next Development Steps
-
-Next steps in the project:
-
-1. Fix BPR negative sampling
-2. Implement mini-batch BPR training
-3. Implement candidate ranking evaluation
-4. Optimize dataset preprocessing
-5. Add sequential recommender baselines
-6. Implement final unexpectedness-aware model
-
----
-
-# 15. Research Goal
-
-The ultimate goal is to develop a recommender system that optimizes:
-
-```
-Utility = Relevance + Unexpectedness
-```
-
-rather than maximizing relevance alone.
-
-This aims to reduce user boredom and encourage meaningful discovery.
-
----
-
-# 16. Repository Status
-
-Current stage:
-
-Early experimental pipeline implemented.
-
-Working components:
-
-* dataset loading
-* evaluation metrics
-* popularity baseline
-* BPR baseline
-
-Components under development:
-
-* corrected BPR training
-* candidate ranking evaluation
-* efficient sampling pipelines
-
----
-
-# 17. Notes for Future Development
-
-Important improvements required:
-
-* GPU training support ✅ **IMPLEMENTED!**
-* sparse matrix optimization
-* graph-based embeddings
-* transformer sequence modeling
-
-These components will be added in future iterations.
-
----
-
-# 18. Kaggle Pipeline Integration ✨ NEW!
-
-## Quick Start: Running on Kaggle
-
-The project now supports **GPU-accelerated training on Kaggle** with 15-30x faster training compared to the original NumPy implementation.
-
-### Prerequisites
-- Kaggle account
-- MovieLens 32M dataset uploaded to Kaggle (or set to auto-download)
-
-### Method 1: Using the Kaggle Notebook (Easiest)
-
-1. **Upload code to Kaggle** as a dataset or use Git:
-   ```bash
-   # In Kaggle notebook cell
-   !git clone https://github.com/your-username/recsys.git
-   %cd recsys
-   ```
-
-2. **Enable GPU**: Settings → Accelerator → GPU T4 x2
-
-3. **Open** `notebooks/kaggle_runner.ipynb` and run all cells
-
-4. **Download results** from `/kaggle/working/outputs/`
-
-### Method 2: Command Line (Advanced)
-
-```python
-# In Kaggle notebook
-!python experiments/experiment_runner.py --config kaggle
-```
-
-With custom settings:
-```python
-!python experiments/experiment_runner.py --config kaggle --data-subset 0.1
-```
-
----
-
-## New Architecture
-
-The refactored codebase now includes:
-
-```
-recsys/
-├── config/                          # Configuration system
-│   ├── base_config.py              # Dataclass configs
-│   ├── local_config.yaml           # Local settings
-│   └── kaggle_config.yaml          # Kaggle settings
-│
-├── data/
-│   ├── dataset.py                  # PyTorch Dataset classes
-│   ├── loaders.py                  # Data loading utilities
-│   ├── preprocessing.py            # ID encoding, filtering
-│   └── train_test_split.py         # Temporal split
-│
-├── evaluation/
-│   ├── [existing metrics]
-│
-├── experiments/
-│   ├── experiment_runner.py        # Main orchestrator
-│   └── [legacy scripts]
-│
-├── models/
-│   ├── bpr_pytorch.py              # GPU-accelerated BPR 🚀
-│   ├── bpr_mf.py                   # Original NumPy version
-│   └── popularity.py
-│
-├── notebooks/
-│   └── kaggle_runner.ipynb         # Kaggle notebook interface
-│
-├── utils/                          # NEW!
-│   ├── environment.py              # Auto-detect local/Kaggle
-│   ├── reproducibility.py          # Seed setting
-│   └── logging_utils.py            # Metrics tracking
-│
-├── outputs/                        # Experiment results
-│   ├── models/
-│   ├── logs/
-│   └── results/
-│
-└── requirements.txt
-```
-
----
-
-## Key Features
-
-✅ **Automatic Environment Detection**: Seamlessly switches between local and Kaggle
-✅ **GPU Acceleration**: 15-30x faster training with PyTorch
-✅ **Configuration Management**: YAML configs for different environments
-✅ **Mini-Batch Training**: Efficient batch processing (2048-4096 samples)
-✅ **Proper ID Encoding**: Fixed train/test encoding inconsistency
-✅ **Checkpointing & Logging**: Automatic model saving and metrics tracking
-✅ **Early Stopping**: Prevents overfitting with patience-based stopping
-
----
-
-## Performance Improvements
-
-| Component | Before | After | Speedup |
-|-----------|--------|-------|---------|
-| BPR Training | 8-12 hours | 15-30 min | **15-30x** |
-| Data Preprocessing | Minutes (iterrows) | Seconds (groupby) | **~50x** |
-| ID Encoding | Inconsistent | Consistent | Fixed bug |
-| Negative Sampling | ✓ Correct | ✓ Correct | Already correct! |
-
----
-
-## Configuration Examples
-
-### Local Testing (Small Subset)
-```yaml
-# config/local_config.yaml
-data:
-  data_subset: 0.01  # Use 1% of data
-model:
-  batch_size: 1024
-  epochs: 5
-```
-
-### Kaggle Full Training
-```yaml
-# config/kaggle_config.yaml
-data:
-  data_subset: null  # Use full dataset
-model:
-  batch_size: 4096  # Larger batches for GPU
-  epochs: 20
-```
-
----
-
-## Running Experiments
-
-### Local Development
-```bash
-# Activate virtual environment
-source .venv/bin/activate
-
-# Install PyYAML if needed
-pip install PyYAML
-
-# Test with small subset
-python experiments/experiment_runner.py --config local --data-subset 0.01
-
-# Full local run (if you have GPU)
-python experiments/experiment_runner.py --config local
-```
-
-### Kaggle Execution
-1. Upload code to Kaggle
-2. Enable GPU (T4 x2 or P100)
-3. Run the notebook or command:
-```python
-!python experiments/experiment_runner.py --config kaggle
-```
-
----
-
-## Outputs
-
-All experiment outputs are saved to `outputs/`:
-
-```
-outputs/
-└── experiment_name_timestamp/
-    ├── models/
-    │   ├── best_model.pt          # Best model checkpoint
-    │   └── checkpoint_epoch_N.pt  # Regular checkpoints
-    ├── logs/
-    │   └── experiment_log.log     # Detailed logs
-    └── results/
-        ├── train_metrics.json     # Training loss per epoch
-        ├── eval_metrics.json      # Evaluation metrics
-        └── final_results.json     # Final results summary
-```
-
----
-
-## Fixed Issues
-
-The Kaggle pipeline addresses all issues identified in the original README:
-
-### ✓ Issue 1: Negative Sampling
-- **Status**: Was already correct! README incorrectly identified this as a problem
-- **Fix**: Code correctly implements rejection sampling
-
-### ✓ Issue 2: Training Efficiency
-- **Before**: 32M sequential updates per epoch (hours)
-- **After**: Mini-batch GPU training (15-30 minutes)
-- **Implementation**: PyTorch DataLoader + GPU tensors
-
-### ✓ Issue 3: ID Encoding Inconsistency
-- **Before**: Train and test created separate encodings
-- **After**: Fit encoder on train, transform test with same encoder
-- **Implementation**: `preprocessing.IDEncoder` class
-
-### ✓ Issue 4: Data Preprocessing
-- **Before**: Slow `iterrows()` for 32M rows
-- **After**: Fast `groupby()` operations
-- **Speedup**: ~50x faster
-
----
-
-## Example: Quick Test Run
-
-```python
-from recsys.config import load_config
-from recsys.experiments import ExperimentRunner
-
-# Load config (auto-detects environment)
-config = load_config()
-
-# Use small subset for testing
-config.data.data_subset = 0.01
-
-# Run experiment
-runner = ExperimentRunner(config)
-results = runner.run()
-
-print(f"NDCG@10: {results['ndcg@10']:.4f}")
-```
-
----
-
-## Troubleshooting
-
-### Q: "Module not found" error
-**A**: Make sure to install PyYAML:
-```bash
-pip install PyYAML
-```
-
-### Q: Kaggle doesn't find the dataset
-**A**: Upload MovieLens 32M as a Kaggle dataset, or set `auto_download=True` in config
-
-### Q: Out of memory error
-**A**: Reduce batch size in config:
-```python
-config.model.batch_size = 2048  # Instead of 4096
-```
-
-### Q: Want to use CPU instead of GPU?
-**A**: Set device in config:
-```python
-config.experiment.device = "cpu"
-```
-
----
-
-## What's Next?
-
-With the Kaggle pipeline in place, the project is ready for:
-
-1. ✅ Running at scale on MovieLens 32M
-2. ⏳ Implementing sequential models (GRU4Rec, SASRec, BERT4Rec)
-3. ⏳ Integrating serendipity/unexpectedness metrics into evaluation
-4. ⏳ Building the final Transformer-based unexpectedness-aware architecture
-
----

@@ -8,14 +8,10 @@ data/loaders.py
 data/preprocessing.py
 data/train_test_split.py
 experiments/__init__.py
-experiments/evaluate_bpr.py
 experiments/evaluate_popularity.py
 experiments/experiment_runner.py
 experiments/test_popularity.py
-experiments/train_bpr.py
 models/__init__.py
-models/bpr_mf.py
-models/bpr_pytorch.py
 models/popularity.py
 recsys.egg-info/PKG-INFO
 recsys.egg-info/SOURCES.txt

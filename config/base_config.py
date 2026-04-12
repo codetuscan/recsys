@@ -13,9 +13,10 @@ import yaml
 class DataConfig:
     """Configuration for data loading and preprocessing."""
 
-    dataset_name: str = "movielens-32m"
+    dataset_name: str = "movielens-1m"
     min_interactions_per_user: int = 5
     min_interactions_per_item: int = 5
+    time_gap_num_buckets: int = 20
     test_ratio: float = 0.2
     negative_samples_train: int = 1
     negative_samples_eval: int = 99
@@ -27,7 +28,7 @@ class DataConfig:
 class ModelConfig:
     """Configuration for model architecture and training."""
 
-    model_name: Literal["bpr", "purs"] = "bpr"
+    model_name: Literal["purs", "sasrec"] = "purs"
     embedding_dim: int = 64
     learning_rate: float = 0.001
     regularization: float = 0.01
@@ -42,12 +43,18 @@ class ModelConfig:
     num_clusters: int = 10  # Number of clusters for Mean Shift (PURS)
     unexpectedness_weight: float = 0.5  # Scaling factor for unexpectedness component (PURS)
 
+    # SASRec-specific parameters
+    sasrec_num_heads: int = 2
+    sasrec_num_layers: int = 2
+    sasrec_dropout: float = 0.2
+    sasrec_ffn_dim: int = 256
+
 
 @dataclass
 class ExperimentConfig:
     """Configuration for experiment execution."""
 
-    experiment_name: str = "bpr_baseline"
+    experiment_name: str = "purs_baseline"
     seed: int = 42
     device: str = "auto"  # "auto", "cpu", "cuda"
     checkpoint_every: int = 2  # Save checkpoint every N epochs
@@ -145,7 +152,7 @@ def load_config(
     config.environment = config_name
 
     # Set paths based on environment
-    env_paths = get_data_paths(config_name)
+    env_paths = get_data_paths(config_name, dataset_name=config.data.dataset_name)
     config.paths = PathConfig(
         raw_data=env_paths["raw"],
         processed_data=env_paths["processed"],

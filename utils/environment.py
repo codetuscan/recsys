@@ -9,6 +9,21 @@ from typing import Dict, Literal
 EnvType = Literal["local", "kaggle"]
 
 
+def _normalize_dataset_name(dataset_name: str) -> str:
+    """Normalize dataset aliases into canonical names."""
+    normalized = dataset_name.strip().lower()
+
+    if normalized in {"movielens-1m", "ml-1m", "1m", "movielens1m"}:
+        return "movielens-1m"
+    if normalized in {"movielens-32m", "ml-32m", "32m", "movielens32m"}:
+        return "movielens-32m"
+
+    raise ValueError(
+        f"Unsupported dataset_name='{dataset_name}'. "
+        "Supported values are movielens-1m or movielens-32m."
+    )
+
+
 def detect_environment() -> EnvType:
     """
     Detect the current execution environment.
@@ -21,7 +36,10 @@ def detect_environment() -> EnvType:
     return "local"
 
 
-def get_data_paths(env: EnvType = None) -> Dict[str, Path]:
+def get_data_paths(
+    env: EnvType = None,
+    dataset_name: str = "movielens-32m",
+) -> Dict[str, Path]:
     """
     Get environment-specific data and output paths.
 
@@ -40,12 +58,31 @@ def get_data_paths(env: EnvType = None) -> Dict[str, Path]:
     if env is None:
         env = detect_environment()
 
+    dataset_name = _normalize_dataset_name(dataset_name)
+
     if env == "kaggle":
         base_input = Path("/kaggle/input")
         base_working = Path("/kaggle/working")
 
+        if dataset_name == "movielens-1m":
+            raw_candidates = [
+                base_input / "movielens-1m" / "ml-1m",
+                base_input / "movielens-1m",
+                base_input / "ml-1m" / "ml-1m",
+                base_input / "ml-1m",
+            ]
+        else:
+            raw_candidates = [
+                base_input / "movielens-32m" / "ml-32m",
+                base_input / "movielens-32m",
+                base_input / "ml-32m" / "ml-32m",
+                base_input / "ml-32m",
+            ]
+
+        raw_path = next((path for path in raw_candidates if path.exists()), raw_candidates[0])
+
         return {
-            "raw": base_input / "movielens-32m",
+            "raw": raw_path,
             "processed": base_working / "data" / "processed",
             "outputs": base_working / "outputs",
             "models": base_working / "outputs" / "models",
@@ -55,8 +92,13 @@ def get_data_paths(env: EnvType = None) -> Dict[str, Path]:
     else:
         project_root = Path(__file__).parent.parent
 
+        if dataset_name == "movielens-1m":
+            raw_path = project_root / "data" / "raw" / "ml-1m"
+        else:
+            raw_path = project_root / "data" / "raw" / "ml-32m"
+
         return {
-            "raw": project_root / "data" / "raw" / "ml-32m",
+            "raw": raw_path,
             "processed": project_root / "data" / "processed",
             "outputs": project_root / "outputs",
             "models": project_root / "outputs" / "models",
@@ -96,7 +138,7 @@ def get_device_str(prefer_gpu: bool = True) -> str:
     return "cpu"
 
 
-def print_environment_info() -> None:
+def print_environment_info(dataset_name: str = "movielens-32m") -> None:
     """
     Print information about the current environment.
     """
@@ -104,7 +146,7 @@ def print_environment_info() -> None:
     import torch
 
     env = detect_environment()
-    paths = get_data_paths(env)
+    paths = get_data_paths(env, dataset_name=dataset_name)
 
     print("=" * 60)
     print("ENVIRONMENT INFORMATION")

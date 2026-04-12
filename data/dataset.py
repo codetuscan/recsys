@@ -1,5 +1,5 @@
 """
-PyTorch Dataset classes for BPR training.
+PyTorch Dataset classes for pairwise ranking training.
 """
 
 import numpy as np
@@ -9,9 +9,9 @@ from typing import Dict, Set
 from collections import defaultdict
 
 
-class BPRDataset(Dataset):
+class PairwiseTrainingDataset(Dataset):
     """
-    PyTorch Dataset for BPR (Bayesian Personalized Ranking) training.
+    PyTorch Dataset for pairwise ranking training.
 
     Generates triplets (user, positive_item, negative_item) where:
     - positive_item is in the user's interaction history
@@ -28,9 +28,10 @@ class BPRDataset(Dataset):
         num_samples_per_epoch: int = None,
         user_history: Dict[int, list] = None,
         history_length: int = 10,
+        pad_value: int = 0,
     ):
         """
-        Initialize BPR dataset.
+        Initialize pairwise training dataset.
 
         Args:
             user_items: Dictionary mapping user_id -> set of item_ids
@@ -45,6 +46,7 @@ class BPRDataset(Dataset):
         self.num_negatives = num_negatives
         self.user_history = user_history or {}
         self.history_length = history_length
+        self.pad_value = pad_value
 
         # Create list of all (user, positive_item) pairs
         self.user_positive_pairs = []
@@ -59,7 +61,7 @@ class BPRDataset(Dataset):
             self.num_samples = min(num_samples_per_epoch, len(self.user_positive_pairs))
 
         print(
-            f"BPRDataset initialized: {len(user_items)} users, "
+            f"PairwiseTrainingDataset initialized: {len(user_items)} users, "
             f"{num_items} items, {len(self.user_positive_pairs)} interactions, "
             f"{self.num_samples} samples per epoch"
             + (f", history_length={history_length}" if user_history else "")
@@ -97,7 +99,7 @@ class BPRDataset(Dataset):
         # Add history if available
         if self.user_history:
             history = self.user_history.get(user, [])
-            history_padded = pad_sequence(history, self.history_length, pad_value=0)
+            history_padded = pad_sequence(history, self.history_length, pad_value=self.pad_value)
             result.insert(1, torch.LongTensor(history_padded))  # Insert after user_id
 
         return tuple(result)
@@ -144,6 +146,7 @@ class EvaluationDataset(Dataset):
         num_negatives: int = 99,
         user_history: Dict[int, list] = None,
         history_length: int = 10,
+        pad_value: int = 0,
     ):
         """
         Initialize evaluation dataset.
@@ -162,6 +165,7 @@ class EvaluationDataset(Dataset):
         self.num_negatives = num_negatives
         self.user_history = user_history or {}
         self.history_length = history_length
+        self.pad_value = pad_value
 
         print(
             f"EvaluationDataset initialized: {len(test_interactions)} test samples, "
@@ -211,10 +215,91 @@ class EvaluationDataset(Dataset):
         # Add history if available
         if self.user_history:
             history = self.user_history.get(user, [])
-            history_padded = pad_sequence(history, self.history_length, pad_value=0)
+            history_padded = pad_sequence(history, self.history_length, pad_value=self.pad_value)
             result.insert(1, torch.LongTensor(history_padded))  # Insert after user_id
 
         return tuple(result)
+
+
+class SequentialPairwiseDataset(Dataset):
+    """
+    Sequential pairwise training dataset for next-item recommendation.
+
+    Creates samples from chronological user sequences:
+    - history: interactions before time t
+    - positive: interaction at time t
+    - negative: sampled item not seen by the user
+    """
+
+    def __init__(
+        self,
+        ratings_df,
+        num_items: int,
+        num_negatives: int = 1,
+        history_length: int = 50,
+        user_col: str = "user_idx",
+        item_col: str = "item_idx",
+        time_col: str = "timestamp",
+        pad_value: int = 0,
+    ):
+        self.num_items = num_items
+        self.num_negatives = num_negatives
+        self.history_length = history_length
+        self.pad_value = pad_value
+
+        self.user_positive_items: Dict[int, Set[int]] = {}
+        self.samples: list[tuple[int, list[int], int]] = []
+
+        ratings_df_sorted = ratings_df.sort_values(by=[user_col, time_col])
+
+        for user, group in ratings_df_sorted.groupby(user_col, sort=False):
+            items = [int(x) for x in group[item_col].tolist()]
+
+            if len(items) < 2:
+                continue
+
+            self.user_positive_items[int(user)] = set(items)
+
+            for idx in range(1, len(items)):
+                start = max(0, idx - history_length)
+                history = items[start:idx]
+                pos_item = items[idx]
+                self.samples.append((int(user), history, int(pos_item)))
+
+        print(
+            f"SequentialPairwiseDataset initialized: {len(self.user_positive_items)} users, "
+            f"{num_items} items, {len(self.samples)} sequence samples, "
+            f"history_length={history_length}, pad_value={pad_value}"
+        )
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int):
+        user, history, pos_item = self.samples[idx]
+        neg_items = self._sample_negative_items(user, self.num_negatives)
+
+        history_padded = pad_sequence(history, self.history_length, pad_value=self.pad_value)
+
+        result = [
+            torch.LongTensor([user]),
+            torch.LongTensor(history_padded),
+            torch.LongTensor([pos_item]),
+            torch.LongTensor(neg_items) if self.num_negatives > 1 else torch.LongTensor([neg_items[0]]),
+        ]
+
+        return tuple(result)
+
+    def _sample_negative_items(self, user: int, num_negatives: int) -> list[int]:
+        user_positive_items = self.user_positive_items[user]
+        negative_items = []
+
+        while len(negative_items) < num_negatives:
+            neg_item = np.random.randint(self.num_items)
+            if neg_item not in user_positive_items:
+                negative_items.append(neg_item)
+
+        return negative_items
 
 
 def build_user_items_dict(ratings_df, user_col="user_idx", item_col="item_idx") -> Dict[int, Set[int]]:
@@ -287,7 +372,7 @@ def pad_sequence(seq: list, max_length: int, pad_value: int = 0) -> np.ndarray:
         Padded numpy array of shape (max_length,)
     """
     if len(seq) >= max_length:
-        return np.array(seq[:max_length], dtype=np.int64)
+        return np.array(seq[-max_length:], dtype=np.int64)
     else:
         padded = np.full(max_length, pad_value, dtype=np.int64)
         padded[-len(seq):] = seq  # Right-align (most recent at the end)

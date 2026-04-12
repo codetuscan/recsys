@@ -1,8 +1,9 @@
 # Data configuration
 data:
-  dataset_name: "movielens-32m"
+  dataset_name: "movielens-1m"
   min_interactions_per_user: 5
   min_interactions_per_item: 5
+  time_gap_num_buckets: 20
   test_ratio: 0.2
   negative_samples_train: 1
   negative_samples_eval: 99
@@ -11,7 +12,7 @@ data:
 
 # Model configuration
 model:
-  model_name: "bpr"
+  model_name: "purs"
   embedding_dim: 64
   learning_rate: 0.001
   regularization: 0.01
@@ -22,7 +23,7 @@ model:
 
 # Experiment configuration
 experiment:
-  experiment_name: "local_test"
+  experiment_name: "local_purs_test"
   seed: 42
   device: "auto"
   checkpoint_every: 2

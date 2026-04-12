@@ -24,17 +24,25 @@ from recsys.utils import (
 from recsys.data import (
     load_data_with_fallback,
     preprocess_ratings,
-    BPRDataset,
+    PairwiseTrainingDataset,
+    SequentialPairwiseDataset,
     EvaluationDataset,
     build_user_items_dict,
     build_user_history_dict,
 )
-from recsys.models import BPR_MF_PyTorch, train_bpr, evaluate_bpr, PURS, train_purs, evaluate_purs
+from recsys.models import (
+    PURS,
+    train_purs,
+    evaluate_purs,
+    SASRec,
+    train_sasrec,
+    evaluate_sasrec,
+)
 
 
 class ExperimentRunner:
     """
-    Main experiment orchestrator for running BPR training and evaluation.
+    Main experiment orchestrator for running recommendation experiments.
     """
 
     def __init__(self, config: Config = None, config_name: str = None):
@@ -81,7 +89,10 @@ class ExperimentRunner:
         ratings, movies = load_data_with_fallback(
             data_path=self.config.paths.raw_data,
             subset=self.config.data.data_subset,
-            auto_download=(self.env == "kaggle"),  # Auto-download on Kaggle if needed
+            auto_download=(
+                self.env == "kaggle" and self.config.data.dataset_name.lower() in {"movielens-32m", "ml-32m", "32m"}
+            ),
+            dataset_name=self.config.data.dataset_name,
         )
 
         # Preprocess
@@ -105,10 +116,10 @@ class ExperimentRunner:
         # Build user-items dictionary
         user_items_train = build_user_items_dict(self.train_data)
 
-        # Build user history if using PURS
+        # Build user history for sequential models
         user_history_train = None
-        if self.config.model.model_name == "purs":
-            print("Building user history sequences for PURS...")
+        if self.config.model.model_name in {"purs", "sasrec"}:
+            print(f"Building user history sequences for {self.config.model.model_name.upper()}...")
             user_history_train = build_user_history_dict(
                 self.train_data,
                 user_col="user_idx",
@@ -118,14 +129,29 @@ class ExperimentRunner:
             )
             print(f"  Sample history lengths: {[len(h) for h in list(user_history_train.values())[:5]]}")
 
-        # Create training dataset
-        train_dataset = BPRDataset(
-            user_items=user_items_train,
-            num_items=self.encoder.num_items,
-            num_negatives=self.config.data.negative_samples_train,
-            user_history=user_history_train,
-            history_length=self.config.model.history_length if user_history_train else 10,
-        )
+        history_length = self.config.model.history_length if user_history_train else 10
+        history_pad_value = self.encoder.num_items if self.config.model.model_name == "sasrec" else 0
+
+        if self.config.model.model_name == "sasrec":
+            train_dataset = SequentialPairwiseDataset(
+                ratings_df=self.train_data,
+                num_items=self.encoder.num_items,
+                num_negatives=self.config.data.negative_samples_train,
+                history_length=history_length,
+                user_col="user_idx",
+                item_col="item_idx",
+                time_col="timestamp",
+                pad_value=history_pad_value,
+            )
+        else:
+            train_dataset = PairwiseTrainingDataset(
+                user_items=user_items_train,
+                num_items=self.encoder.num_items,
+                num_negatives=self.config.data.negative_samples_train,
+                user_history=user_history_train,
+                history_length=history_length,
+                pad_value=history_pad_value,
+            )
 
         # Create training DataLoader
         self.train_loader = DataLoader(
@@ -147,7 +173,8 @@ class ExperimentRunner:
             num_items=self.encoder.num_items,
             num_negatives=self.config.data.negative_samples_eval,
             user_history=user_history_train,
-            history_length=self.config.model.history_length if user_history_train else 10,
+            history_length=history_length,
+            pad_value=history_pad_value,
         )
 
         # Create evaluation DataLoader
@@ -172,7 +199,6 @@ class ExperimentRunner:
         print("=" * 60)
 
         if self.config.model.model_name == "purs":
-            # Create PURS model
             self.model = PURS(
                 num_users=self.encoder.num_users,
                 num_items=self.encoder.num_items,
@@ -183,15 +209,23 @@ class ExperimentRunner:
                 history_length=self.config.model.history_length,
             )
             model_type = "PURS"
-        else:
-            # Create BPR-MF model (default)
-            self.model = BPR_MF_PyTorch(
-                num_users=self.encoder.num_users,
+        elif self.config.model.model_name == "sasrec":
+            self.model = SASRec(
                 num_items=self.encoder.num_items,
+                max_seq_length=self.config.model.history_length,
                 embedding_dim=self.config.model.embedding_dim,
+                num_heads=self.config.model.sasrec_num_heads,
+                num_layers=self.config.model.sasrec_num_layers,
+                dropout=self.config.model.sasrec_dropout,
+                ffn_dim=self.config.model.sasrec_ffn_dim,
                 reg_lambda=self.config.model.regularization,
             )
-            model_type = "BPR-MF"
+            model_type = "SASRec"
+        else:
+            raise ValueError(
+                f"Unsupported model_name='{self.config.model.model_name}'. "
+                "Supported models: purs, sasrec"
+            )
 
         # Move model to device
         self.model = self.model.to(self.device)
@@ -218,9 +252,17 @@ class ExperimentRunner:
         print("TRAINING")
         print("=" * 60)
 
-        # Select training function based on model type
-        train_fn = train_purs if self.config.model.model_name == "purs" else train_bpr
-        eval_fn = evaluate_purs if self.config.model.model_name == "purs" else evaluate_bpr
+        if self.config.model.model_name == "purs":
+            train_fn = train_purs
+            eval_fn = evaluate_purs
+        elif self.config.model.model_name == "sasrec":
+            train_fn = train_sasrec
+            eval_fn = evaluate_sasrec
+        else:
+            raise ValueError(
+                f"Unsupported model_name='{self.config.model.model_name}'. "
+                "Supported models: purs, sasrec"
+            )
 
         best_ndcg = 0.0
         patience_counter = 0
@@ -325,7 +367,7 @@ class ExperimentRunner:
         print("\n" + "=" * 60)
         print(f"EXPERIMENT: {self.config.experiment.experiment_name}")
         print("=" * 60)
-        print_environment_info()
+        print_environment_info(dataset_name=self.config.data.dataset_name)
 
         # Run pipeline
         self.load_data()
@@ -338,16 +380,27 @@ class ExperimentRunner:
         print("FINAL EVALUATION")
         print("=" * 60)
 
-        # Use appropriate evaluation function
-        eval_fn = evaluate_purs if self.config.model.model_name == "purs" else evaluate_bpr
-
-        final_metrics = eval_fn(
-            model=self.model,
-            eval_loader=self.eval_loader,
-            device=self.device,
-            k_values=self.config.experiment.k_values,
-            verbose=True,
-        )
+        if self.config.model.model_name == "purs":
+            final_metrics = evaluate_purs(
+                model=self.model,
+                eval_loader=self.eval_loader,
+                device=self.device,
+                k_values=self.config.experiment.k_values,
+                verbose=True,
+            )
+        elif self.config.model.model_name == "sasrec":
+            final_metrics = evaluate_sasrec(
+                model=self.model,
+                eval_loader=self.eval_loader,
+                device=self.device,
+                k_values=self.config.experiment.k_values,
+                verbose=True,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported model_name='{self.config.model.model_name}'. "
+                "Supported models: purs, sasrec"
+            )
 
         print("\nFinal Results:")
         for metric, value in final_metrics.items():
@@ -384,7 +437,7 @@ def main():
     """Main entry point for running experiments."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run BPR recommendation experiment")
+    parser = argparse.ArgumentParser(description="Run recommendation experiment")
     parser.add_argument(
         "--config",
         type=str,
@@ -396,6 +449,13 @@ def main():
         type=float,
         default=None,
         help="Fraction of data to use (for testing)",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        choices=["purs", "sasrec"],
+        help="Model to run (overrides config)",
     )
 
     args = parser.parse_args()
@@ -409,6 +469,11 @@ def main():
     # Override data subset if specified
     if args.data_subset is not None:
         config.data.data_subset = args.data_subset
+
+    # Override model if specified
+    if args.model is not None:
+        config.model.model_name = args.model
+        config.experiment.experiment_name = f"{args.model}_{config.environment}_run"
 
     # Run experiment
     runner = ExperimentRunner(config)

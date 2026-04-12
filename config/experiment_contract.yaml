@@ -1,0 +1,32 @@
+# Frozen protocol contract for the three-model comparison.
+# Any result reported for SASRec, PURS, and NOVA should follow this contract.
+
+protocol_name: "ml1m_unexpectedness_three_model"
+protocol_version: "v1"
+
+data:
+  dataset_name: "movielens-1m"
+  min_interactions_per_user: 5
+  min_interactions_per_item: 5
+  temporal_split:
+    validation: "second_last_interaction"
+    test: "last_interaction"
+  sequence_length: 50
+  time_gap_num_buckets: 20
+
+sampling:
+  train_negatives_per_positive: 1
+  eval_negatives_per_positive: 99
+
+training:
+  loss: "binary_cross_entropy"
+  optimizer: "adam"
+
+metrics:
+  - "ndcg@10"
+  - "recall@10"
+  - "unexpectedness@10"
+
+hardware:
+  target: "kaggle_t4"
+  note: "Designed for Kaggle free tier constraints"

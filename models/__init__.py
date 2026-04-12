@@ -2,15 +2,16 @@
 Recommendation models.
 """
 
-from .bpr_pytorch import BPR_MF_PyTorch, train_bpr, evaluate_bpr
 from .purs import PURS
 from .purs_train import train_purs, evaluate_purs
+from .sasrec import SASRec
+from .sasrec_train import train_sasrec, evaluate_sasrec
 
 __all__ = [
-    "BPR_MF_PyTorch",
-    "train_bpr",
-    "evaluate_bpr",
     "PURS",
     "train_purs",
     "evaluate_purs",
+    "SASRec",
+    "train_sasrec",
+    "evaluate_sasrec",
 ]
