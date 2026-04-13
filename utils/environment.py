@@ -131,11 +131,38 @@ def get_device_str(prefer_gpu: bool = True) -> str:
     Returns:
         "cuda" if GPU available and preferred, "cpu" otherwise
     """
+    if prefer_gpu:
+        cuda_usable, _ = is_cuda_runtime_usable("cuda")
+        if cuda_usable:
+            return "cuda"
+    return "cpu"
+
+
+def is_cuda_runtime_usable(device: str = "cuda") -> tuple[bool, str]:
+    """
+    Check whether CUDA is practically usable for tensor ops in this runtime.
+
+    This catches cases where ``torch.cuda.is_available()`` is True but the
+    installed PyTorch/CUDA build has no compatible kernels for the active GPU.
+
+    Args:
+        device: CUDA device string to probe (for example, "cuda" or "cuda:0").
+
+    Returns:
+        Tuple of (is_usable, reason). ``reason`` is empty when usable.
+    """
     import torch
 
-    if prefer_gpu and torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
+    if not torch.cuda.is_available():
+        return False, "CUDA not available"
+
+    try:
+        # Probe a tiny CUDA op and sync so architecture/runtime issues surface immediately.
+        _ = torch.arange(1, device=device)
+        torch.cuda.synchronize()
+        return True, ""
+    except Exception as exc:
+        return False, str(exc).splitlines()[0]
 
 
 def print_environment_info(dataset_name: str = "movielens-32m") -> None:

@@ -19,6 +19,7 @@ from recsys.utils import (
     ensure_directories,
     setup_reproducibility,
     MetricsLogger,
+    is_cuda_runtime_usable,
     print_environment_info,
 )
 from recsys.data import (
@@ -60,6 +61,9 @@ class ExperimentRunner:
         self.env = detect_environment()
         self.device = config.experiment.device
 
+        # Guard against CUDA runtime incompatibility (for example unsupported GPU arch).
+        self._validate_runtime_device()
+
         # Setup directories
         ensure_directories(self.env)
 
@@ -78,6 +82,19 @@ class ExperimentRunner:
         self.encoder = None
         self.model = None
         self.optimizer = None
+
+    def _validate_runtime_device(self):
+        """Validate selected runtime device and fallback to CPU when CUDA is unusable."""
+        if isinstance(self.device, str) and self.device.startswith("cuda"):
+            cuda_usable, reason = is_cuda_runtime_usable(self.device)
+            if not cuda_usable:
+                print("\n[Device Warning] CUDA was selected but is not usable in this runtime.")
+                if reason:
+                    print(f"[Device Warning] Reason: {reason}")
+                print("[Device Warning] Falling back to CPU for this run.")
+                self.device = "cpu"
+                self.config.experiment.device = "cpu"
+                self.config.model.pin_memory = False
 
     def load_data(self):
         """Load and preprocess data."""
@@ -118,6 +135,11 @@ class ExperimentRunner:
 
         # Build user history for sequential models
         user_history_train = None
+        sequence_length = (
+            self.config.model.sasrec_history_length
+            if self.config.model.model_name == "sasrec"
+            else self.config.model.history_length
+        )
         if self.config.model.model_name in {"purs", "sasrec"}:
             print(f"Building user history sequences for {self.config.model.model_name.upper()}...")
             user_history_train = build_user_history_dict(
@@ -125,11 +147,11 @@ class ExperimentRunner:
                 user_col="user_idx",
                 item_col="item_idx",
                 time_col="timestamp",
-                max_history_length=self.config.model.history_length,
+                max_history_length=sequence_length,
             )
             print(f"  Sample history lengths: {[len(h) for h in list(user_history_train.values())[:5]]}")
 
-        history_length = self.config.model.history_length if user_history_train else 10
+        history_length = sequence_length if user_history_train else 10
         history_pad_value = self.encoder.num_items if self.config.model.model_name == "sasrec" else 0
 
         if self.config.model.model_name == "sasrec":
@@ -212,7 +234,7 @@ class ExperimentRunner:
         elif self.config.model.model_name == "sasrec":
             self.model = SASRec(
                 num_items=self.encoder.num_items,
-                max_seq_length=self.config.model.history_length,
+                max_seq_length=self.config.model.sasrec_history_length,
                 embedding_dim=self.config.model.embedding_dim,
                 num_heads=self.config.model.sasrec_num_heads,
                 num_layers=self.config.model.sasrec_num_layers,

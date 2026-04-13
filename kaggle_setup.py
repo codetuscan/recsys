@@ -40,7 +40,7 @@ class Config:
     model_name = 'purs'
     epochs = 5
     batch_size = 64
-    history_length = 10
+    history_length = 50
     gru_hidden_dim = 64
     num_clusters = 5
     unexpectedness_weight = 0.1
@@ -80,6 +80,7 @@ try:
         gru_hidden_dim=config.gru_hidden_dim,
         num_clusters=config.num_clusters,
         unexpectedness_weight=config.unexpectedness_weight,
+        history_length=config.history_length,
     ).to(config.device)
     print(f"✓ Model initialized with {sum(p.numel() for p in model.parameters()):,} parameters")
 

@@ -44,6 +44,7 @@ class ModelConfig:
     unexpectedness_weight: float = 0.5  # Scaling factor for unexpectedness component (PURS)
 
     # SASRec-specific parameters
+    sasrec_history_length: int = 50  # Sequence length for SASRec self-attention
     sasrec_num_heads: int = 2
     sasrec_num_layers: int = 2
     sasrec_dropout: float = 0.2
@@ -128,7 +129,7 @@ def load_config(
     Returns:
         Config object with environment-specific settings
     """
-    from ..utils.environment import detect_environment, get_data_paths
+    from ..utils.environment import detect_environment, get_data_paths, get_device_str
 
     # Detect environment if not specified
     if config_name is None:
@@ -164,9 +165,7 @@ def load_config(
 
     # Auto-detect device if set to "auto"
     if config.experiment.device == "auto":
-        import torch
-
-        config.experiment.device = "cuda" if torch.cuda.is_available() else "cpu"
+        config.experiment.device = get_device_str(prefer_gpu=True)
 
     return config
 

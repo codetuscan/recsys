@@ -7,6 +7,7 @@ from .environment import (
     get_data_paths,
     ensure_directories,
     get_device_str,
+    is_cuda_runtime_usable,
     print_environment_info,
 )
 from .reproducibility import (
@@ -26,6 +27,7 @@ __all__ = [
     "get_data_paths",
     "ensure_directories",
     "get_device_str",
+    "is_cuda_runtime_usable",
     "print_environment_info",
     "set_seed",
     "log_environment",
