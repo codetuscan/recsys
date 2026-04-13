@@ -3,3 +3,4 @@ data/raw
 outputs
 __pycache__
 .ipynb_checkpoints
+SASRec.pdf

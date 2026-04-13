@@ -25,6 +25,7 @@ from recsys.utils import (
 from recsys.data import (
     load_data_with_fallback,
     preprocess_ratings,
+    preprocess_sequential_ratings,
     PairwiseTrainingDataset,
     SequentialPairwiseDataset,
     EvaluationDataset,
@@ -78,10 +79,16 @@ class ExperimentRunner:
 
         # Placeholders
         self.train_data = None
+        self.val_data = None
         self.test_data = None
         self.encoder = None
         self.model = None
         self.optimizer = None
+        self.val_loader = None
+        self.test_loader = None
+        self.eval_loader = None
+        self.final_eval_loader = None
+        self.best_checkpoint_path = None
 
     def _validate_runtime_device(self):
         """Validate selected runtime device and fallback to CPU when CUDA is unusable."""
@@ -102,6 +109,9 @@ class ExperimentRunner:
         print("LOADING DATA")
         print("=" * 60)
 
+        # Reset split placeholders in case the same runner instance is reused.
+        self.val_data = None
+
         # Load raw ratings
         ratings, movies = load_data_with_fallback(
             data_path=self.config.paths.raw_data,
@@ -113,16 +123,27 @@ class ExperimentRunner:
         )
 
         # Preprocess
-        self.train_data, self.test_data, self.encoder = preprocess_ratings(
-            ratings,
-            min_user_interactions=self.config.data.min_interactions_per_user,
-            min_item_interactions=self.config.data.min_interactions_per_item,
-            use_temporal_split=self.config.data.use_temporal_split,
-        )
+        if self.config.model.model_name == "sasrec":
+            # Use train/val/test temporal split for SASRec protocol alignment.
+            self.train_data, self.val_data, self.test_data, self.encoder, _ = preprocess_sequential_ratings(
+                ratings,
+                min_user_interactions=self.config.data.min_interactions_per_user,
+                min_item_interactions=self.config.data.min_interactions_per_item,
+                time_gap_num_buckets=self.config.data.time_gap_num_buckets,
+            )
+        else:
+            self.train_data, self.test_data, self.encoder = preprocess_ratings(
+                ratings,
+                min_user_interactions=self.config.data.min_interactions_per_user,
+                min_item_interactions=self.config.data.min_interactions_per_item,
+                use_temporal_split=self.config.data.use_temporal_split,
+            )
 
         print(f"✓ Data loaded successfully")
         print(f"  Environment: {self.env}")
         print(f"  Device: {self.device}")
+        if self.val_data is not None:
+            print(f"  Split: train/val/test = {len(self.train_data):,}/{len(self.val_data):,}/{len(self.test_data):,}")
 
     def create_dataloaders(self):
         """Create PyTorch DataLoaders for training and evaluation."""
@@ -184,33 +205,73 @@ class ExperimentRunner:
             pin_memory=self.config.model.pin_memory,
         )
 
-        # Create evaluation dataset
-        test_interactions = list(
-            zip(self.test_data["user_idx"].values, self.test_data["item_idx"].values)
-        )
+        def _create_eval_loader(eval_interactions, eval_history):
+            eval_dataset = EvaluationDataset(
+                test_interactions=eval_interactions,
+                user_train_items=user_items_train,
+                num_items=self.encoder.num_items,
+                num_negatives=self.config.data.negative_samples_eval,
+                user_history=eval_history,
+                history_length=history_length,
+                pad_value=history_pad_value,
+            )
+            return DataLoader(
+                eval_dataset,
+                batch_size=self.config.model.batch_size,
+                shuffle=False,
+                num_workers=self.config.model.num_workers,
+                pin_memory=self.config.model.pin_memory,
+            )
 
-        eval_dataset = EvaluationDataset(
-            test_interactions=test_interactions,
-            user_train_items=user_items_train,
-            num_items=self.encoder.num_items,
-            num_negatives=self.config.data.negative_samples_eval,
-            user_history=user_history_train,
-            history_length=history_length,
-            pad_value=history_pad_value,
-        )
+        if self.val_data is not None:
+            val_interactions = list(
+                zip(self.val_data["user_idx"].values, self.val_data["item_idx"].values)
+            )
+            self.val_loader = _create_eval_loader(val_interactions, user_history_train)
 
-        # Create evaluation DataLoader
-        self.eval_loader = DataLoader(
-            eval_dataset,
-            batch_size=self.config.model.batch_size,
-            shuffle=False,
-            num_workers=self.config.model.num_workers,
-            pin_memory=self.config.model.pin_memory,
-        )
+            # For SASRec test-time ranking, append validation item(s) into each user's history.
+            user_history_test = (
+                {int(user): list(items) for user, items in user_history_train.items()}
+                if user_history_train is not None
+                else {}
+            )
+            if self.config.model.model_name == "sasrec":
+                val_history_updates = (
+                    self.val_data.sort_values(["user_idx", "timestamp"])
+                    .groupby("user_idx", sort=False)["item_idx"]
+                    .apply(list)
+                    .to_dict()
+                )
+                for user, val_items in val_history_updates.items():
+                    prior_history = user_history_test.get(int(user), [])
+                    merged_history = prior_history + [int(item) for item in val_items]
+                    if len(merged_history) > history_length:
+                        merged_history = merged_history[-history_length:]
+                    user_history_test[int(user)] = merged_history
+
+            test_interactions = list(
+                zip(self.test_data["user_idx"].values, self.test_data["item_idx"].values)
+            )
+            self.test_loader = _create_eval_loader(test_interactions, user_history_test)
+
+            self.eval_loader = self.val_loader
+            self.final_eval_loader = self.test_loader
+        else:
+            test_interactions = list(
+                zip(self.test_data["user_idx"].values, self.test_data["item_idx"].values)
+            )
+            self.test_loader = _create_eval_loader(test_interactions, user_history_train)
+            self.val_loader = None
+            self.eval_loader = self.test_loader
+            self.final_eval_loader = self.test_loader
 
         print(f"✓ DataLoaders created")
         print(f"  Train batches: {len(self.train_loader)}")
-        print(f"  Eval batches: {len(self.eval_loader)}")
+        if self.val_loader is not None:
+            print(f"  Validation batches: {len(self.val_loader)}")
+            print(f"  Test batches: {len(self.test_loader)}")
+        else:
+            print(f"  Eval batches: {len(self.eval_loader)}")
         print(f"  Batch size: {self.config.model.batch_size}")
         print("=" * 60)
 
@@ -286,8 +347,9 @@ class ExperimentRunner:
                 "Supported models: purs, sasrec"
             )
 
-        best_ndcg = 0.0
+        best_ndcg = -1.0
         patience_counter = 0
+        eval_stage_name = "Validation" if self.val_loader is not None else "Evaluation"
 
         for epoch in range(1, self.config.model.epochs + 1):
             # Train one epoch
@@ -319,7 +381,7 @@ class ExperimentRunner:
                 self.metrics_logger.log_eval_metrics(epoch, eval_metrics)
 
                 # Print metrics
-                print(f"  Evaluation:")
+                print(f"  {eval_stage_name}:")
                 for metric, value in eval_metrics.items():
                     print(f"    {metric}: {value:.4f}")
 
@@ -368,6 +430,7 @@ class ExperimentRunner:
         if is_best:
             best_path = checkpoint_dir / "best_model.pt"
             torch.save(checkpoint, best_path)
+            self.best_checkpoint_path = best_path
             print(f"  ✓ Best model saved to {best_path}")
 
     def load_checkpoint(self, checkpoint_path: Path):
@@ -395,7 +458,12 @@ class ExperimentRunner:
         self.load_data()
         self.create_dataloaders()
         self.create_model()
+        self.best_checkpoint_path = None
         best_ndcg = self.train()
+
+        if self.best_checkpoint_path is not None and self.best_checkpoint_path.exists():
+            print(f"Loading best checkpoint for final evaluation: {self.best_checkpoint_path}")
+            self.load_checkpoint(self.best_checkpoint_path)
 
         # Final evaluation
         print("\n" + "=" * 60)
@@ -405,7 +473,7 @@ class ExperimentRunner:
         if self.config.model.model_name == "purs":
             final_metrics = evaluate_purs(
                 model=self.model,
-                eval_loader=self.eval_loader,
+                eval_loader=self.final_eval_loader,
                 device=self.device,
                 k_values=self.config.experiment.k_values,
                 verbose=True,
@@ -413,7 +481,7 @@ class ExperimentRunner:
         elif self.config.model.model_name == "sasrec":
             final_metrics = evaluate_sasrec(
                 model=self.model,
-                eval_loader=self.eval_loader,
+                eval_loader=self.final_eval_loader,
                 device=self.device,
                 k_values=self.config.experiment.k_values,
                 verbose=True,
@@ -436,6 +504,8 @@ class ExperimentRunner:
             "experiment_name": self.config.experiment.experiment_name,
             "environment": self.env,
             "device": self.device,
+            "selection_split": "validation" if self.val_loader is not None else "test",
+            "final_eval_split": "test",
             "duration_seconds": duration,
             "best_ndcg@10": best_ndcg,
             **final_metrics,
