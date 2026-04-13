@@ -435,7 +435,9 @@ class ExperimentRunner:
 
     def load_checkpoint(self, checkpoint_path: Path):
         """Load model from checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        # PyTorch 2.6+ defaults torch.load(weights_only=True), which can fail
+        # for our trusted checkpoints that include config metadata.
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         print(f"✓ Loaded checkpoint from {checkpoint_path}")
