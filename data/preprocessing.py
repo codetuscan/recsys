@@ -300,6 +300,12 @@ def preprocess_sequential_ratings(
         min_item_interactions=min_item_interactions,
     )
 
+    if ratings.empty:
+        raise ValueError(
+            "No ratings remain after k-core filtering for sequential preprocessing. "
+            "Increase data subset size or lower min_interactions thresholds."
+        )
+
     ratings, gap_metadata = add_log_time_gap_buckets(
         ratings,
         user_col="userId",
@@ -546,6 +552,12 @@ def preprocess_ratings(
         ratings, min_user_interactions, min_item_interactions
     )
 
+    if ratings.empty:
+        raise ValueError(
+            "No ratings remain after k-core filtering. "
+            "Increase data subset size or lower min_interactions thresholds."
+        )
+
     # Step 2: Train/test split
     if use_temporal_split:
         train, test = temporal_train_test_split(ratings)
@@ -590,7 +602,9 @@ def preprocess_ratings(
     print(f"  Test: {len(test):,} ratings")
     print(f"  Users: {encoder.num_users:,}")
     print(f"  Items: {encoder.num_items:,}")
-    print(f"  Sparsity: {100 * len(train) / (encoder.num_users * encoder.num_items):.4f}%")
+    denominator = encoder.num_users * encoder.num_items
+    sparsity = (100 * len(train) / denominator) if denominator > 0 else 0.0
+    print(f"  Sparsity: {sparsity:.4f}%")
     print("=" * 60 + "\n")
 
     return train, test, encoder

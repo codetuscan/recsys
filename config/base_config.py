@@ -20,6 +20,7 @@ class DataConfig:
     test_ratio: float = 0.2
     negative_samples_train: int = 1
     negative_samples_eval: int = 99
+    positive_rating_threshold: float = 3.5
     use_temporal_split: bool = True  # Leave-one-out temporal split
     data_subset: Optional[float] = None  # For testing: use fraction of data
 
@@ -29,17 +30,18 @@ class ModelConfig:
     """Configuration for model architecture and training."""
 
     model_name: Literal["purs", "sasrec"] = "purs"
-    embedding_dim: int = 64
-    learning_rate: float = 0.001
+    embedding_dim: int = 128
+    learning_rate: float = 0.01
     regularization: float = 0.01
-    batch_size: int = 2048
-    epochs: int = 10
+    batch_size: int = 256
+    epochs: int = 100
     num_workers: int = 4  # DataLoader workers
     pin_memory: bool = True  # For GPU training
+    dropout: float = 0.1
 
     # PURS-specific parameters
     history_length: int = 10  # Sequence length for GRU (PURS)
-    gru_hidden_dim: int = 32  # GRU hidden dimension (PURS)
+    gru_hidden_dim: int = 128  # GRU hidden dimension (PURS)
     num_clusters: int = 10  # Number of clusters for Mean Shift (PURS)
     unexpectedness_weight: float = 0.5  # Scaling factor for unexpectedness component (PURS)
 
@@ -60,7 +62,7 @@ class ExperimentConfig:
     device: str = "auto"  # "auto", "cpu", "cuda"
     checkpoint_every: int = 2  # Save checkpoint every N epochs
     eval_every: int = 1  # Evaluate every N epochs
-    k_values: list[int] = field(default_factory=lambda: [5, 10, 20])  # For metrics@K
+    k_values: list[int] = field(default_factory=lambda: [10])  # For metrics@K
     early_stopping_patience: int = 5
     verbose: bool = True
 
@@ -176,17 +178,15 @@ def create_default_configs():
     """
     config_dir = Path(__file__).parent
 
-    # Local config (smaller batch size, fewer epochs for testing)
+    # Local config
     local_config = Config(
-        model=ModelConfig(batch_size=1024, epochs=5),
-        experiment=ExperimentConfig(experiment_name="local_test"),
+        experiment=ExperimentConfig(experiment_name="local_purs_pointwise"),
     )
     local_config.save(config_dir / "local_config.yaml")
 
-    # Kaggle config (larger batch size, more epochs)
+    # Kaggle config
     kaggle_config = Config(
-        model=ModelConfig(batch_size=4096, epochs=20),
-        experiment=ExperimentConfig(experiment_name="kaggle_experiment"),
+        experiment=ExperimentConfig(experiment_name="kaggle_purs_pointwise"),
     )
     kaggle_config.save(config_dir / "kaggle_config.yaml")
 

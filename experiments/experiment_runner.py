@@ -27,6 +27,7 @@ from recsys.data import (
     preprocess_ratings,
     preprocess_sequential_ratings,
     PairwiseTrainingDataset,
+    PointwiseTrainingDataset,
     SequentialPairwiseDataset,
     EvaluationDataset,
     build_user_items_dict,
@@ -186,6 +187,17 @@ class ExperimentRunner:
                 time_col="timestamp",
                 pad_value=history_pad_value,
             )
+        elif self.config.model.model_name == "purs":
+            train_dataset = PointwiseTrainingDataset(
+                ratings_df=self.train_data,
+                user_col="user_idx",
+                item_col="item_idx",
+                rating_col="rating",
+                positive_threshold=self.config.data.positive_rating_threshold,
+                user_history=user_history_train,
+                history_length=history_length,
+                pad_value=history_pad_value,
+            )
         else:
             train_dataset = PairwiseTrainingDataset(
                 user_items=user_items_train,
@@ -223,10 +235,23 @@ class ExperimentRunner:
                 pin_memory=self.config.model.pin_memory,
             )
 
+        def _build_eval_interactions(split_df):
+            if self.config.model.model_name == "purs" and "rating" in split_df.columns:
+                positive_df = split_df[
+                    split_df["rating"] >= self.config.data.positive_rating_threshold
+                ]
+                if len(positive_df) == 0:
+                    print(
+                        "[Evaluation Warning] No positive items found at threshold "
+                        f"{self.config.data.positive_rating_threshold}. Falling back to all interactions."
+                    )
+                else:
+                    split_df = positive_df
+
+            return list(zip(split_df["user_idx"].values, split_df["item_idx"].values))
+
         if self.val_data is not None:
-            val_interactions = list(
-                zip(self.val_data["user_idx"].values, self.val_data["item_idx"].values)
-            )
+            val_interactions = _build_eval_interactions(self.val_data)
             self.val_loader = _create_eval_loader(val_interactions, user_history_train)
 
             # For SASRec test-time ranking, append validation item(s) into each user's history.
@@ -249,17 +274,13 @@ class ExperimentRunner:
                         merged_history = merged_history[-history_length:]
                     user_history_test[int(user)] = merged_history
 
-            test_interactions = list(
-                zip(self.test_data["user_idx"].values, self.test_data["item_idx"].values)
-            )
+            test_interactions = _build_eval_interactions(self.test_data)
             self.test_loader = _create_eval_loader(test_interactions, user_history_test)
 
             self.eval_loader = self.val_loader
             self.final_eval_loader = self.test_loader
         else:
-            test_interactions = list(
-                zip(self.test_data["user_idx"].values, self.test_data["item_idx"].values)
-            )
+            test_interactions = _build_eval_interactions(self.test_data)
             self.test_loader = _create_eval_loader(test_interactions, user_history_train)
             self.val_loader = None
             self.eval_loader = self.test_loader
@@ -290,6 +311,7 @@ class ExperimentRunner:
                 num_clusters=self.config.model.num_clusters,
                 unexpectedness_weight=self.config.model.unexpectedness_weight,
                 history_length=self.config.model.history_length,
+                dropout=self.config.model.dropout,
             )
             model_type = "PURS"
         elif self.config.model.model_name == "sasrec":
@@ -410,6 +432,17 @@ class ExperimentRunner:
 
         return best_ndcg
 
+    @staticmethod
+    def _sanitize_for_checkpoint(obj):
+        """Convert non-primitive config values (for example Path) to safe serializable forms."""
+        if isinstance(obj, Path):
+            return str(obj)
+        if isinstance(obj, dict):
+            return {k: ExperimentRunner._sanitize_for_checkpoint(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [ExperimentRunner._sanitize_for_checkpoint(v) for v in obj]
+        return obj
+
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         """Save model checkpoint."""
         checkpoint_dir = self.config.paths.models
@@ -419,7 +452,7 @@ class ExperimentRunner:
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "config": self.config.to_dict(),
+            "config": self._sanitize_for_checkpoint(self.config.to_dict()),
         }
 
         # Save regular checkpoint
@@ -435,8 +468,22 @@ class ExperimentRunner:
 
     def load_checkpoint(self, checkpoint_path: Path):
         """Load model from checkpoint."""
-        # PyTorch 2.6+ defaults torch.load(weights_only=True), which can fail
-        # for our trusted checkpoints that include config metadata.
+        # PyTorch 2.6+ can enforce safe-loading semantics in some runtimes.
+        # Allowlist pathlib classes used by older checkpoints and load trusted local files.
+        import pathlib
+
+        if hasattr(torch, "serialization") and hasattr(torch.serialization, "add_safe_globals"):
+            torch.serialization.add_safe_globals(
+                [
+                    pathlib.Path,
+                    pathlib.PurePath,
+                    pathlib.PosixPath,
+                    pathlib.PurePosixPath,
+                    pathlib.WindowsPath,
+                    pathlib.PureWindowsPath,
+                ]
+            )
+
         checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
@@ -465,7 +512,12 @@ class ExperimentRunner:
 
         if self.best_checkpoint_path is not None and self.best_checkpoint_path.exists():
             print(f"Loading best checkpoint for final evaluation: {self.best_checkpoint_path}")
-            self.load_checkpoint(self.best_checkpoint_path)
+            try:
+                self.load_checkpoint(self.best_checkpoint_path)
+            except Exception as exc:
+                print("[Checkpoint Warning] Failed to load best checkpoint for final evaluation.")
+                print(f"[Checkpoint Warning] {exc}")
+                print("[Checkpoint Warning] Proceeding with current in-memory model.")
 
         # Final evaluation
         print("\n" + "=" * 60)

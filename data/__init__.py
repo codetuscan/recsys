@@ -24,6 +24,7 @@ from .preprocessing import (
 )
 from .dataset import (
     PairwiseTrainingDataset,
+    PointwiseTrainingDataset,
     SequentialPairwiseDataset,
     EvaluationDataset,
     build_user_items_dict,
@@ -49,6 +50,7 @@ __all__ = [
     "save_sequential_preprocessing_artifacts",
     "write_preprocessing_manifest",
     "PairwiseTrainingDataset",
+    "PointwiseTrainingDataset",
     "SequentialPairwiseDataset",
     "EvaluationDataset",
     "build_user_items_dict",

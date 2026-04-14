@@ -7,28 +7,34 @@ data:
   test_ratio: 0.2
   negative_samples_train: 1
   negative_samples_eval: 99
+  positive_rating_threshold: 3.5
   use_temporal_split: true
   data_subset: null  # Use full dataset on Kaggle
 
 # Model configuration
 model:
   model_name: "purs"
-  embedding_dim: 64
-  learning_rate: 0.001
+  embedding_dim: 128
+  learning_rate: 0.01
   regularization: 0.01
-  batch_size: 4096  # Larger batch size for GPU
-  epochs: 20
+  batch_size: 256
+  epochs: 100
   num_workers: 4
-  pin_memory: true  # GPU acceleration
+  pin_memory: true
+  dropout: 0.1
+  history_length: 10
+  gru_hidden_dim: 128
+  num_clusters: 10
+  unexpectedness_weight: 0.5
 
 # Experiment configuration
 experiment:
-  experiment_name: "kaggle_purs_baseline"
+  experiment_name: "kaggle_purs_pointwise_baseline"
   seed: 42
   device: "auto"
   checkpoint_every: 2
   eval_every: 1
-  k_values: [5, 10, 20]
+  k_values: [10]
   early_stopping_patience: 5
   verbose: true
 

@@ -5,22 +5,17 @@ Implements the paper: "PURS: Personalized Unexpected Recommender System for Impr
 Recsys 2020.
 
 Architecture:
-1. CTR Scoring: Self-Attentive GRU + MLP (similar to Deep Interest Network)
-2. Unexpectedness: Multi-cluster distance metric (Mean Shift on user history embeddings)
-3. Sub-Gaussian Activation: Controls unexpectedness contribution
-4. Personalized Factor: User-specific unexpectedness preference via attention
-
-Final Score = CTR_score + f(unexpectedness) + personalized_factor
+1. Sequence encoder: item embeddings -> GRU -> attention-weighted user state
+2. Pointwise prediction head: [user_state || target_item_embedding] -> 3-layer MLP -> sigmoid
+3. Optional unexpectedness augmentation for scoring analysis
 """
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from sklearn.cluster import MeanShift
 from sklearn.cluster import estimate_bandwidth
 from typing import Dict, Tuple, Optional
-from collections import defaultdict
 
 
 class SelfAttention(nn.Module):
@@ -110,16 +105,16 @@ class PURS(nn.Module):
             hidden_size=gru_hidden_dim,
             num_layers=1,
             batch_first=True,
-            dropout=dropout if gru_hidden_dim > 1 else 0,
+            dropout=0.0,
         )
 
         # Self-attention on GRU outputs
         self.attention = SelfAttention(gru_hidden_dim)
 
-        # MLP for CTR prediction
+        # Pointwise 3-layer MLP head.
         # Input: [attention_output ⊕ item_embedding]
         mlp_input_dim = gru_hidden_dim + embedding_dim
-        self.ctr_mlp = nn.Sequential(
+        self.pointwise_mlp = nn.Sequential(
             nn.Linear(mlp_input_dim, 128),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -127,8 +122,8 @@ class PURS(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(64, 1),
-            nn.Sigmoid(),  # CTR in [0, 1]
         )
+        self.output_activation = nn.Sigmoid()
 
         # ============= Personalized Unexpectedness Factor =============
         # Self-Attentive MLP
@@ -270,6 +265,22 @@ class PURS(nn.Module):
         """
         return x * torch.exp(-x)
 
+    def encode_user_state(self, histories: torch.Tensor) -> torch.Tensor:
+        """
+        Encode user history with GRU + attention.
+
+        Args:
+            histories: (batch_size, history_length) padded item sequences
+
+        Returns:
+            context: (batch_size, gru_hidden_dim) user state
+        """
+        history_embeddings = self.item_embedding(histories)
+        mask = (histories > 0).float()
+        gru_output, _ = self.gru(history_embeddings)
+        context = self.attention(gru_output, mask)
+        return context
+
     def forward_ctr(
         self, user_ids: torch.Tensor, item_ids: torch.Tensor, histories: torch.Tensor
     ) -> torch.Tensor:
@@ -284,28 +295,20 @@ class PURS(nn.Module):
         Returns:
             ctr_scores: (batch_size,) CTR predictions in [0, 1]
         """
-        batch_size = user_ids.shape[0]
+        # Keep user_ids argument for interface compatibility.
+        _ = user_ids
 
-        # Get embeddings
-        history_embeddings = self.item_embedding(histories)  # (batch_size, history_length, embedding_dim)
-        item_embeddings = self.item_embedding(item_ids)  # (batch_size, embedding_dim)
-
-        # Create mask for padded positions (0 is pad)
-        mask = (histories > 0).float()  # (batch_size, history_length)
-
-        # GRU forward
-        gru_output, _ = self.gru(history_embeddings)  # (batch_size, history_length, gru_hidden_dim)
-
-        # Self-attention on GRU output
-        context = self.attention(gru_output, mask)  # (batch_size, gru_hidden_dim)
+        context = self.encode_user_state(histories)
+        item_embeddings = self.item_embedding(item_ids)
 
         # Concatenate context and item embedding
-        combined = torch.cat([context, item_embeddings], dim=1)  # (batch_size, gru_hidden_dim + embedding_dim)
+        combined = torch.cat([context, item_embeddings], dim=1)
 
-        # MLP for CTR prediction
-        ctr_scores = self.ctr_mlp(combined)  # (batch_size, 1)
+        # 3-layer MLP + sigmoid for binary pointwise prediction.
+        ctr_logits = self.pointwise_mlp(combined)
+        ctr_scores = self.output_activation(ctr_logits)
 
-        return ctr_scores.squeeze(1)  # (batch_size,)
+        return ctr_scores.squeeze(1)
 
     def forward_unexpectedness_perception(self, histories: torch.Tensor) -> torch.Tensor:
         """
@@ -317,17 +320,7 @@ class PURS(nn.Module):
         Returns:
             unexp_factors: (batch_size,) personalized preference in [0, 1]
         """
-        # Get embeddings
-        history_embeddings = self.item_embedding(histories)  # (batch_size, history_length, embedding_dim)
-
-        # Create mask for padded positions
-        mask = (histories > 0).float()  # (batch_size, history_length)
-
-        # GRU forward
-        gru_output, _ = self.gru(history_embeddings)  # (batch_size, history_length, gru_hidden_dim)
-
-        # Self-attention
-        context = self.attention(gru_output, mask)  # (batch_size, gru_hidden_dim)
+        context = self.encode_user_state(histories)
 
         # MLP for unexpectedness perception
         unexp_factors = self.unexp_perception_mlp(context)  # (batch_size, 1)
@@ -335,7 +328,7 @@ class PURS(nn.Module):
         return unexp_factors.squeeze(1)  # (batch_size,)
 
     def forward(
-        self, user_ids: torch.Tensor, item_ids: torch.Tensor, histories: torch.Tensor, compute_unexpectedness: bool = True
+        self, user_ids: torch.Tensor, item_ids: torch.Tensor, histories: torch.Tensor, compute_unexpectedness: bool = False
     ) -> torch.Tensor:
         """
         Compute unified PURS scores.
@@ -381,10 +374,10 @@ class PURS(nn.Module):
         # Personalized factor
         unexp_factors = self.forward_unexpectedness_perception(histories)
 
-        # Combine: Final Score = CTR + λ * f(unexpectedness) + personalized_factor
+        # Combine optional unexpectedness terms and keep output in probability range.
         final_scores = ctr_scores + self.unexpectedness_weight * unexp_activated + unexp_factors
 
-        return final_scores
+        return torch.clamp(final_scores, min=0.0, max=1.0)
 
     def recommend(
         self,
@@ -393,6 +386,7 @@ class PURS(nn.Module):
         histories: torch.Tensor = None,
         k: int = 10,
         device: str = "cpu",
+        compute_unexpectedness: bool = False,
     ) -> np.ndarray:
         """
         Generate top-K recommendations for users.
@@ -410,13 +404,6 @@ class PURS(nn.Module):
         if all_items is None:
             all_items = np.arange(self.num_items)
 
-        num_users = len(user_ids)
-        num_items = len(all_items)
-
-        # Prepare tensors
-        user_ids_tensor = torch.LongTensor(user_ids).to(device)
-        all_items_tensor = torch.LongTensor(all_items).to(device)
-
         recommendations = []
 
         with torch.no_grad():
@@ -433,7 +420,12 @@ class PURS(nn.Module):
 
                 for item_id in all_items:
                     item_id_batch = torch.LongTensor([item_id]).to(device)
-                    score = self.forward(user_ids_batch, item_id_batch, user_history, compute_unexpectedness=True)
+                    score = self.forward(
+                        user_ids_batch,
+                        item_id_batch,
+                        user_history,
+                        compute_unexpectedness=compute_unexpectedness,
+                    )
                     scores.append(score.item())
 
                 scores = np.array(scores)

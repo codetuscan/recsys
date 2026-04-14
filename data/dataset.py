@@ -1,5 +1,5 @@
 """
-PyTorch Dataset classes for pairwise ranking training.
+PyTorch Dataset classes for recommendation training and evaluation.
 """
 
 import numpy as np
@@ -125,6 +125,74 @@ class PairwiseTrainingDataset(Dataset):
                 negative_items.append(neg_item)
 
         return negative_items
+
+
+class PointwiseTrainingDataset(Dataset):
+    """
+    Pointwise binary training dataset for explicit ratings.
+
+    Each sample is built from an observed user-item interaction and a binary label:
+    - label = 1 if rating >= positive_threshold
+    - label = 0 otherwise
+
+    Optionally includes user history sequences for sequential models like PURS.
+    """
+
+    def __init__(
+        self,
+        ratings_df,
+        user_col: str = "user_idx",
+        item_col: str = "item_idx",
+        rating_col: str = "rating",
+        positive_threshold: float = 3.5,
+        user_history: Dict[int, list] = None,
+        history_length: int = 10,
+        pad_value: int = 0,
+    ):
+        if rating_col not in ratings_df.columns:
+            raise ValueError(
+                f"PointwiseTrainingDataset requires '{rating_col}' column for label binarization."
+            )
+
+        self.user_history = user_history or {}
+        self.history_length = history_length
+        self.pad_value = pad_value
+
+        self.users = ratings_df[user_col].astype(np.int64).values
+        self.items = ratings_df[item_col].astype(np.int64).values
+        raw_ratings = ratings_df[rating_col].astype(np.float32).values
+        self.labels = (raw_ratings >= float(positive_threshold)).astype(np.float32)
+
+        positive_count = int(np.sum(self.labels))
+        negative_count = int(len(self.labels) - positive_count)
+
+        print(
+            f"PointwiseTrainingDataset initialized: {len(self.labels)} samples, "
+            f"positives={positive_count}, negatives={negative_count}, "
+            f"threshold={positive_threshold}"
+            + (f", history_length={history_length}" if user_history else "")
+        )
+
+    def __len__(self) -> int:
+        return len(self.labels)
+
+    def __getitem__(self, idx: int):
+        user = int(self.users[idx])
+        item = int(self.items[idx])
+        label = float(self.labels[idx])
+
+        result = [
+            torch.LongTensor([user]),
+            torch.LongTensor([item]),
+            torch.FloatTensor([label]),
+        ]
+
+        if self.user_history:
+            history = self.user_history.get(user, [])
+            history_padded = pad_sequence(history, self.history_length, pad_value=self.pad_value)
+            result.insert(1, torch.LongTensor(history_padded))
+
+        return tuple(result)
 
 
 class EvaluationDataset(Dataset):

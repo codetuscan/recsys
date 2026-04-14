@@ -52,6 +52,8 @@ def _apply_contract_to_config(config, contract: dict) -> None:
     config.data.min_interactions_per_user = int(data_cfg["min_interactions_per_user"])
     config.data.min_interactions_per_item = int(data_cfg["min_interactions_per_item"])
     config.data.time_gap_num_buckets = int(data_cfg["time_gap_num_buckets"])
+    if "positive_rating_threshold" in data_cfg:
+        config.data.positive_rating_threshold = float(data_cfg["positive_rating_threshold"])
     config.model.history_length = int(data_cfg["sequence_length"])
     config.data.negative_samples_train = int(sampling_cfg["train_negatives_per_positive"])
     config.data.negative_samples_eval = int(sampling_cfg["eval_negatives_per_positive"])

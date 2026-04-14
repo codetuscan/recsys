@@ -8,10 +8,11 @@ data:
   dataset_name: "movielens-1m"
   min_interactions_per_user: 5
   min_interactions_per_item: 5
+  positive_rating_threshold: 3.5
   temporal_split:
     validation: "second_last_interaction"
     test: "last_interaction"
-  sequence_length: 50
+  sequence_length: 10
   time_gap_num_buckets: 20
 
 sampling:
@@ -21,11 +22,20 @@ sampling:
 training:
   loss: "binary_cross_entropy"
   optimizer: "adam"
+  epochs: 100
+  batch_size: 256
+  learning_rate: 0.01
+  embedding_dim: 128
+  dropout: 0.1
 
 metrics:
+  - "hr@10"
+  - "precision@10"
+  - "auc"
   - "ndcg@10"
-  - "recall@10"
   - "unexpectedness@10"
+  - "coverage@10"
+  - "serendipity@10"
 
 hardware:
   target: "kaggle_t4"
