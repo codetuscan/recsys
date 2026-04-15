@@ -93,11 +93,12 @@ class Model(object):
             ),
         )
 
-        long_output, _ = tf1.nn.dynamic_rnn(
-            tf1.nn.rnn_cell.GRUCell(hidden_size),
-            inputs=h_emb,
-            dtype=tf.float32,
-        )
+        # Use Keras GRU for forward compatibility with modern TensorFlow builds.
+        long_output = tf.keras.layers.GRU(
+            hidden_size,
+            return_sequences=True,
+            name="long_gru",
+        )(h_emb)
 
         long_preference, _ = self.seq_attention(
             long_output, hidden_size, self.long_memory_window
@@ -106,19 +107,21 @@ class Model(object):
         long_preference = tf1.nn.dropout(long_preference, keep_prob=0.1)
 
         concat = tf.concat([long_preference, item_emb], axis=1)
-        concat = tf1.layers.batch_normalization(inputs=concat)
-        concat = tf1.layers.dense(concat, 80, activation=tf.nn.sigmoid, name="f1")
-        concat = tf1.layers.dense(concat, 40, activation=tf.nn.sigmoid, name="f2")
-        concat = tf1.layers.dense(concat, 1, activation=None, name="f3")
+        concat = tf.keras.layers.BatchNormalization(name="concat_bn")(concat, training=False)
+        concat = tf.keras.layers.Dense(80, activation=tf.nn.sigmoid, name="f1")(concat)
+        concat = tf.keras.layers.Dense(40, activation=tf.nn.sigmoid, name="f2")(concat)
+        concat = tf.keras.layers.Dense(1, activation=None, name="f3")(concat)
         concat = tf.reshape(concat, [-1])
 
         unexp_factor = self.unexp_attention(
             item_emb, unexp_emb, [self.long_memory_window] * self.batch_size
         )
-        unexp_factor = tf1.layers.batch_normalization(inputs=unexp_factor)
+        unexp_factor = tf.keras.layers.BatchNormalization(name="unexp_bn")(
+            unexp_factor, training=False
+        )
         unexp_factor = tf.reshape(unexp_factor, [-1, hidden_size])
-        unexp_factor = tf1.layers.dense(unexp_factor, hidden_size)
-        unexp_factor = tf1.layers.dense(unexp_factor, 1, activation=None)
+        unexp_factor = tf.keras.layers.Dense(hidden_size, name="unexp_f1")(unexp_factor)
+        unexp_factor = tf.keras.layers.Dense(1, activation=None, name="unexp_f2")(unexp_factor)
         unexp_factor = tf.reshape(unexp_factor, [-1])
 
         self.center = self.mean_shift(h_long_emb)
@@ -229,8 +232,8 @@ class Model(object):
 
         net = tf.concat([keys, keys - querys, querys, keys * querys], axis=-1)
         for units in [32, 16]:
-            net = tf1.layers.dense(net, units=units, activation=tf.nn.relu)
-        att_wgt = tf1.layers.dense(net, units=1, activation=tf.sigmoid)
+            net = tf.keras.layers.Dense(units=units, activation=tf.nn.relu)(net)
+        att_wgt = tf.keras.layers.Dense(units=1, activation=tf.sigmoid)(net)
         outputs = tf.reshape(att_wgt, shape=[-1, 1, keys_length], name="weight")
         scores = outputs
         scores = scores / (embedding_size ** 0.5)

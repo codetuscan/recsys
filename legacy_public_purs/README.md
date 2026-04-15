@@ -33,6 +33,8 @@ This folder provides an isolated, public-style PURS pipeline so you can mimic th
 pip install -q -r legacy_public_purs/requirements-kaggle-legacy.txt
 ```
 
+This requirement set is pinned for modern Kaggle Python (3.12-compatible TensorFlow).
+
 4. Run training using your existing config:
 
 ```bash
