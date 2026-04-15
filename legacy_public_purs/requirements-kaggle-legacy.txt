@@ -1,0 +1,6 @@
+# Legacy public-PURS runtime (isolated from main PyTorch stack)
+# Use in a fresh Kaggle notebook session.
+tensorflow==2.12.1
+numpy==1.23.5
+pandas==2.1.4
+PyYAML==6.0.1
