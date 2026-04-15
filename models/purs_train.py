@@ -8,18 +8,62 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
-def _binary_auc_from_single_positive(scores: np.ndarray, positive_index: int) -> float:
-    """Compute AUC for one positive item versus multiple negatives."""
-    if len(scores) <= 1:
-        return 0.5
+def _public_auc_from_records(records: list[list[float]]) -> float:
+    """AUC calculation aligned with the public PURS implementation."""
+    if not records:
+        return 0.0
 
-    pos_score = scores[positive_index]
-    neg_scores = np.delete(scores, positive_index)
+    auc = 0.0
+    fp1, tp1, fp2, tp2 = 0.0, 0.0, 0.0, 0.0
 
-    greater = np.sum(pos_score > neg_scores)
-    equal = np.sum(pos_score == neg_scores)
+    arr = sorted(records, key=lambda d: d[2])
+    for record in arr:
+        fp2 += record[0]  # noclick
+        tp2 += record[1]  # click
+        auc += (fp2 - fp1) * (tp2 + tp1)
+        fp1, tp1 = fp2, tp2
 
-    return float((greater + 0.5 * equal) / len(neg_scores))
+    threshold = len(arr) - 1e-3
+    if tp2 > threshold or fp2 > threshold:
+        return -0.5
+    if tp2 * fp2 > 0.0:
+        return float(1.0 - auc / (2.0 * tp2 * fp2))
+    return 0.0
+
+
+def _public_hit_rate_from_records(records: list[list[float]]) -> float:
+    """Hit-rate calculation aligned with the public PURS implementation."""
+    if not records:
+        return 0.0
+
+    hit_values = []
+    user_ids = sorted({int(x[2]) for x in records})
+
+    for user in user_ids:
+        arr_user = [x for x in records if int(x[2]) == user and int(x[1]) == 1]
+        # Public code divides by len(arr_user); guard empty-user case to avoid runtime errors.
+        if not arr_user:
+            hit_values.append(0.0)
+            continue
+        hit_values.append(float(sum(x[0] for x in arr_user) / len(arr_user)))
+
+    return float(np.mean(hit_values)) if hit_values else 0.0
+
+
+def _unexpectedness_scores(model, item_ids: torch.Tensor, histories: torch.Tensor) -> list[float]:
+    """Compute per-sample unexpectedness values for metric logging."""
+    scores = []
+    for i in range(item_ids.shape[0]):
+        user_history = histories[i]
+        candidate_item = int(item_ids[i].item())
+
+        centroids, cluster_sizes = model.compute_user_clusters(user_history)
+        candidate_embedding = (
+            model.item_embedding(item_ids[i : i + 1]).detach().cpu().numpy()[0]
+        )
+        unexp = model.compute_unexpectedness(candidate_embedding, centroids, cluster_sizes)
+        scores.append(float(unexp))
+    return scores
 
 
 def train_purs(
@@ -97,30 +141,24 @@ def evaluate_purs(
     verbose: bool = True,
 ):
     """
-    Evaluate PURS model using candidate ranking with binary pointwise scores.
+    Evaluate PURS model using public PURS-style metrics.
 
     Args:
         model: PURS model
-        eval_loader: DataLoader with evaluation samples (user, [history], candidates, gt_position)
+        eval_loader: DataLoader with evaluation samples (user, [history], item, label)
         device: Device to evaluate on
-        k_values: List of K values for metrics@K
+        k_values: Unused placeholder kept for function signature compatibility
         verbose: If True, show progress bar
 
     Returns:
-        Dictionary with metrics: hr@K, precision@K, ndcg@K, auc,
-        unexpectedness@K, coverage@K, serendipity@K
+        Dictionary with public-style metric keys.
     """
     model.eval()
 
-    metrics = {f"precision@{k}": [] for k in k_values}
-    metrics.update({f"hr@{k}": [] for k in k_values})
-    metrics.update({f"recall@{k}": [] for k in k_values})
-    metrics.update({f"ndcg@{k}": [] for k in k_values})
-    metrics.update({f"unexpectedness@{k}": [] for k in k_values})
-    metrics.update({f"serendipity@{k}": [] for k in k_values})
-    metrics["auc"] = []
-
-    coverage_items = {k: set() for k in k_values}
+    auc_records: list[list[float]] = []
+    hit_records: list[list[float]] = []
+    rec_items: list[int] = []
+    unexpectedness_values: list[float] = []
 
     iterator = tqdm(eval_loader, desc="Evaluating") if verbose else eval_loader
 
@@ -128,101 +166,55 @@ def evaluate_purs(
         for batch in iterator:
             # Unpack batch
             if len(batch) == 4:
-                users, histories, candidates, gt_positions = batch
+                users, histories, items, labels = batch
                 histories = histories.to(device)
             else:
-                users, candidates, gt_positions = batch
+                users, items, labels = batch
                 batch_size = users.shape[0]
                 histories = torch.zeros(batch_size, model.history_length, dtype=torch.long).to(device)
 
             users = users.view(-1).to(device)
-            candidates = candidates.to(device)
-            gt_positions = gt_positions.view(-1)
+            items = items.view(-1).to(device)
+            labels = labels.view(-1).float().to(device)
 
-            batch_size = users.shape[0]
-            top_k_max = max(k_values)
+            scores = (
+                model.forward(users, items, histories, compute_unexpectedness=False)
+                .detach()
+                .cpu()
+                .numpy()
+            )
+            labels_np = labels.detach().cpu().numpy()
+            users_np = users.detach().cpu().numpy()
+            items_np = items.detach().cpu().numpy()
+            preds_np = (scores > 0.5).astype(np.int32)
 
-            # Rank candidates for each user
-            for i in range(batch_size):
-                user_id = users[i].item()
-                candidate_items = candidates[i]
-                gt_pos = gt_positions[i].item()
+            for label_val, score_val in zip(labels_np, scores):
+                if label_val > 0:
+                    auc_records.append([0.0, 1.0, float(score_val)])
+                else:
+                    auc_records.append([1.0, 0.0, float(score_val)])
 
-                # Get user history
-                user_history = histories[i : i + 1]  # (1, history_length)
+            for label_val, pred_val, user_id in zip(labels_np, preds_np, users_np):
+                hit_records.append([float(label_val), int(pred_val), int(user_id)])
 
-                # Score candidate set for this user.
-                num_candidates = candidate_items.shape[0]
-                user_ids_tensor = torch.full(
-                    (num_candidates,), user_id, dtype=torch.long, device=device
-                )
-                history_batch = user_history.repeat(num_candidates, 1)
+            for pred_val, item_id in zip(preds_np, items_np):
+                if pred_val == 1:
+                    rec_items.append(int(item_id))
 
-                scores = (
-                    model.forward(
-                        user_ids_tensor,
-                        candidate_items,
-                        history_batch,
-                        compute_unexpectedness=False,
-                    )
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
-                candidate_items_np = candidate_items.detach().cpu().numpy()
+            unexpectedness_values.extend(_unexpectedness_scores(model, items, histories))
 
-                # Rank candidates by score (descending)
-                ranking = np.argsort(-scores)[:top_k_max]
+    hit_rate = _public_hit_rate_from_records(hit_records)
+    auc_value = _public_auc_from_records(auc_records)
+    coverage_value = len(set(rec_items)) / max(int(getattr(model, "num_items", 0)), 1)
+    unexpectedness_value = float(np.mean(unexpectedness_values)) if unexpectedness_values else 0.0
 
-                # AUC for one-positive candidate set.
-                metrics["auc"].append(_binary_auc_from_single_positive(scores, gt_pos))
+    _ = k_values
 
-                history_items = set(user_history[0][user_history[0] > 0].cpu().numpy().tolist())
-                relevant_items = {int(candidate_items_np[gt_pos])}
-
-                # Compute metrics for each K
-                for k in k_values:
-                    ranking_k = ranking[:k]
-                    hit = 1 if gt_pos in ranking_k else 0
-
-                    top_items_k = [int(x) for x in candidate_items_np[ranking_k].tolist()]
-
-                    # HR@K, Precision@K, Recall@K
-                    metrics[f"hr@{k}"].append(float(hit))
-                    metrics[f"precision@{k}"].append(hit / k)
-                    metrics[f"recall@{k}"].append(hit)  # Single positive item
-
-                    # NDCG@K
-                    if hit:
-                        pos_in_ranking = np.where(ranking_k == gt_pos)[0][0]
-                        dcg = 1.0 / np.log2(pos_in_ranking + 2)
-                        idcg = 1.0 / np.log2(2)
-                        ndcg = dcg / idcg
-                    else:
-                        ndcg = 0.0
-
-                    metrics[f"ndcg@{k}"].append(ndcg)
-
-                    # Unexpectedness@K: ratio of top-K items not in user history.
-                    unexpected_items = [item for item in top_items_k if item not in history_items]
-                    unexpectedness = len(unexpected_items) / k if k > 0 else 0.0
-                    metrics[f"unexpectedness@{k}"].append(unexpectedness)
-
-                    # Serendipity@K: recommended items that are both relevant and unexpected.
-                    serendip_items = [
-                        item for item in top_items_k if item in relevant_items and item not in history_items
-                    ]
-                    metrics[f"serendipity@{k}"].append(len(serendip_items) / k if k > 0 else 0.0)
-
-                    # Coverage@K: unique recommended items across users.
-                    coverage_items[k].update(top_items_k)
-
-    # Average metrics
-    avg_metrics = {key: np.mean(values) if values else 0.0 for key, values in metrics.items()}
-
-    # Coverage is dataset-level, not user-level average.
-    num_items = max(int(getattr(model, "num_items", 0)), 1)
-    for k in k_values:
-        avg_metrics[f"coverage@{k}"] = len(coverage_items[k]) / num_items
-
-    return avg_metrics
+    return {
+        "auc": auc_value,
+        "hit_rate": hit_rate,
+        # In the public implementation, hit_rate is effectively precision over predicted positives.
+        "precision": hit_rate,
+        "coverage": coverage_value,
+        "unexpectedness": unexpectedness_value,
+    }

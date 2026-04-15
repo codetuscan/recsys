@@ -90,6 +90,7 @@ class ExperimentRunner:
         self.eval_loader = None
         self.final_eval_loader = None
         self.best_checkpoint_path = None
+        self.selection_metric_name = "ndcg@10"
 
     def _validate_runtime_device(self):
         """Validate selected runtime device and fallback to CPU when CUDA is unusable."""
@@ -216,6 +217,35 @@ class ExperimentRunner:
             num_workers=self.config.model.num_workers,
             pin_memory=self.config.model.pin_memory,
         )
+
+        if self.config.model.model_name == "purs":
+            eval_dataset = PointwiseTrainingDataset(
+                ratings_df=self.test_data,
+                user_col="user_idx",
+                item_col="item_idx",
+                rating_col="rating",
+                positive_threshold=self.config.data.positive_rating_threshold,
+                user_history=user_history_train,
+                history_length=history_length,
+                pad_value=history_pad_value,
+            )
+            self.test_loader = DataLoader(
+                eval_dataset,
+                batch_size=self.config.model.batch_size,
+                shuffle=False,
+                num_workers=self.config.model.num_workers,
+                pin_memory=self.config.model.pin_memory,
+            )
+            self.val_loader = None
+            self.eval_loader = self.test_loader
+            self.final_eval_loader = self.test_loader
+
+            print(f"✓ DataLoaders created")
+            print(f"  Train batches: {len(self.train_loader)}")
+            print(f"  Eval batches: {len(self.eval_loader)}")
+            print(f"  Batch size: {self.config.model.batch_size}")
+            print("=" * 60)
+            return
 
         def _create_eval_loader(eval_interactions, eval_history):
             eval_dataset = EvaluationDataset(
@@ -369,7 +399,9 @@ class ExperimentRunner:
                 "Supported models: purs, sasrec"
             )
 
-        best_ndcg = -1.0
+        best_selection_score = -1.0
+        selection_metric_name = "auc" if self.config.model.model_name == "purs" else "ndcg@10"
+        self.selection_metric_name = selection_metric_name
         patience_counter = 0
         eval_stage_name = "Validation" if self.val_loader is not None else "Evaluation"
 
@@ -408,9 +440,19 @@ class ExperimentRunner:
                     print(f"    {metric}: {value:.4f}")
 
                 # Early stopping check
-                current_ndcg = eval_metrics.get("ndcg@10", 0.0)
-                if current_ndcg > best_ndcg:
-                    best_ndcg = current_ndcg
+                current_score = eval_metrics.get(selection_metric_name)
+                if current_score is None:
+                    if self.config.model.model_name == "purs":
+                        print(
+                            f"[Evaluation Warning] Missing expected metric '{selection_metric_name}'. "
+                            "Using 0.0 as fallback for early stopping."
+                        )
+                        current_score = 0.0
+                    else:
+                        current_score = eval_metrics.get("ndcg@10", 0.0)
+
+                if current_score > best_selection_score:
+                    best_selection_score = current_score
                     patience_counter = 0
 
                     # Save best model
@@ -427,10 +469,13 @@ class ExperimentRunner:
                 self.save_checkpoint(epoch, is_best=False)
 
         print("=" * 60)
-        print(f"✓ Training complete. Best NDCG@10: {best_ndcg:.4f}")
+        print(
+            f"✓ Training complete. Best {selection_metric_name.upper()}: "
+            f"{best_selection_score:.4f}"
+        )
         print("=" * 60)
 
-        return best_ndcg
+        return best_selection_score
 
     @staticmethod
     def _sanitize_for_checkpoint(obj):
@@ -508,7 +553,7 @@ class ExperimentRunner:
         self.create_dataloaders()
         self.create_model()
         self.best_checkpoint_path = None
-        best_ndcg = self.train()
+        best_selection_score = self.train()
 
         if self.best_checkpoint_path is not None and self.best_checkpoint_path.exists():
             print(f"Loading best checkpoint for final evaluation: {self.best_checkpoint_path}")
@@ -561,7 +606,8 @@ class ExperimentRunner:
             "selection_split": "validation" if self.val_loader is not None else "test",
             "final_eval_split": "test",
             "duration_seconds": duration,
-            "best_ndcg@10": best_ndcg,
+            "best_selection_metric": self.selection_metric_name,
+            "best_selection_score": best_selection_score,
             **final_metrics,
         }
 

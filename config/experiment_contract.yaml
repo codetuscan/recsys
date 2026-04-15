@@ -29,13 +29,11 @@ training:
   dropout: 0.1
 
 metrics:
-  - "hr@10"
-  - "precision@10"
   - "auc"
-  - "ndcg@10"
-  - "unexpectedness@10"
-  - "coverage@10"
-  - "serendipity@10"
+  - "hit_rate"
+  - "precision"
+  - "coverage"
+  - "unexpectedness"
 
 hardware:
   target: "kaggle_t4"
