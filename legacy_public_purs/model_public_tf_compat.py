@@ -93,9 +93,10 @@ class Model(object):
             ),
         )
 
-        # Use Keras GRU for forward compatibility with modern TensorFlow builds.
-        long_output = tf.keras.layers.GRU(
-            hidden_size,
+        # Use an explicit GRUCell-based RNN path to avoid CuDNN-only GRU kernels,
+        # which can fail on some Kaggle runtime/library combinations.
+        long_output = tf.keras.layers.RNN(
+            tf.keras.layers.GRUCell(hidden_size),
             return_sequences=True,
             name="long_gru",
         )(h_emb)
@@ -103,8 +104,8 @@ class Model(object):
         long_preference, _ = self.seq_attention(
             long_output, hidden_size, self.long_memory_window
         )
-        # Keep public behavior: tf1 dropout arg is keep_prob.
-        long_preference = tf1.nn.dropout(long_preference, keep_prob=0.1)
+        # Public code used keep_prob=0.1; in TF2 API this is rate=0.9.
+        long_preference = tf.nn.dropout(long_preference, rate=0.9)
 
         concat = tf.concat([long_preference, item_emb], axis=1)
         concat = tf.keras.layers.BatchNormalization(name="concat_bn")(concat, training=False)
