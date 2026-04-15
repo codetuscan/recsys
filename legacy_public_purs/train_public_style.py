@@ -163,43 +163,118 @@ def _normalize_dataset_name(dataset_name: str) -> str:
     raise ValueError(f"Unsupported dataset_name: {dataset_name}")
 
 
+def _choose_best_ratings_file(dataset_name: str, paths: list[Path]) -> Path:
+    """Pick the most likely correct ratings file when multiple are discovered."""
+
+    def _score(path: Path) -> tuple[int, int]:
+        score = 0
+        lower_path = str(path).lower()
+
+        if dataset_name == "movielens-1m":
+            if (path.parent / "movies.dat").exists():
+                score += 3
+            if (path.parent / "users.dat").exists():
+                score += 3
+            if "ml-1m" in lower_path or "movielens-1m" in lower_path:
+                score += 2
+        else:
+            if (path.parent / "movies.csv").exists():
+                score += 3
+            if "ml-32m" in lower_path or "movielens-32m" in lower_path:
+                score += 2
+
+        # Prefer explicit project-local copies prepared by the notebook.
+        if "/kaggle/working/recsys/data/raw" in lower_path:
+            score += 4
+        elif "/kaggle/working" in lower_path:
+            score += 1
+
+        # Keep deterministic tie-breaking.
+        return (-score, len(str(path)))
+
+    return sorted(paths, key=_score)[0]
+
+
 def _resolve_ratings_file(dataset_name: str, raw_dir: Path | None) -> Path:
     dataset_name = _normalize_dataset_name(dataset_name)
 
-    if raw_dir is None:
-        raw_dir = Path("/kaggle/input")
+    file_name = "ratings.dat" if dataset_name == "movielens-1m" else "ratings.csv"
 
-    raw_dir = Path(raw_dir)
+    # Ordered roots: explicit raw_dir first, then notebook-copied paths, then Kaggle input.
+    roots: list[Path] = []
+    if raw_dir is not None:
+        roots.append(Path(raw_dir))
 
-    if dataset_name == "movielens-1m":
-        candidates = [
-            raw_dir / "ratings.dat",
-            raw_dir / "ml-1m" / "ratings.dat",
-            raw_dir / "movielens-1m" / "ratings.dat",
-            raw_dir / "movielens-1m" / "ml-1m" / "ratings.dat",
-            Path("/kaggle/input/movielens-1m/ml-1m/ratings.dat"),
-            Path("/kaggle/input/movielens-1m/ratings.dat"),
-            Path("/kaggle/input/ml-1m/ml-1m/ratings.dat"),
-            Path("/kaggle/input/ml-1m/ratings.dat"),
+    roots.extend(
+        [
+            Path.cwd() / "data" / "raw",
+            Path.cwd() / "data" / "raw" / "ml-1m",
+            Path.cwd() / "data" / "raw" / "ml-32m",
+            Path("/kaggle/working/recsys/data/raw"),
+            Path("/kaggle/working/recsys/data/raw/ml-1m"),
+            Path("/kaggle/working/recsys/data/raw/ml-32m"),
+            Path("/kaggle/input"),
+            Path("/kaggle/working"),
         ]
-    else:
-        candidates = [
-            raw_dir / "ratings.csv",
-            raw_dir / "ml-32m" / "ratings.csv",
-            raw_dir / "movielens-32m" / "ratings.csv",
-            raw_dir / "movielens-32m" / "ml-32m" / "ratings.csv",
-            Path("/kaggle/input/movielens-32m/ml-32m/ratings.csv"),
-            Path("/kaggle/input/movielens-32m/ratings.csv"),
-            Path("/kaggle/input/ml-32m/ml-32m/ratings.csv"),
-            Path("/kaggle/input/ml-32m/ratings.csv"),
-        ]
+    )
 
-    for path in candidates:
-        if path.exists():
+    # Fast-path explicit candidates.
+    fast_candidates = [
+        p / file_name for p in roots if p is not None
+    ] + [
+        Path("/kaggle/input/movielens-1m/ml-1m/ratings.dat"),
+        Path("/kaggle/input/movielens-1m/ratings.dat"),
+        Path("/kaggle/input/ml-1m/ml-1m/ratings.dat"),
+        Path("/kaggle/input/ml-1m/ratings.dat"),
+        Path("/kaggle/input/movielens-32m/ml-32m/ratings.csv"),
+        Path("/kaggle/input/movielens-32m/ratings.csv"),
+        Path("/kaggle/input/ml-32m/ml-32m/ratings.csv"),
+        Path("/kaggle/input/ml-32m/ratings.csv"),
+    ]
+
+    for path in fast_candidates:
+        if path.exists() and path.name == file_name:
             return path
 
+    discovered: list[Path] = []
+    seen: set[str] = set()
+
+    for root in roots:
+        root = Path(root)
+        if not root.exists():
+            continue
+
+        if root.is_file() and root.name == file_name:
+            key = str(root.resolve())
+            if key not in seen:
+                discovered.append(root)
+                seen.add(key)
+            continue
+
+        if not root.is_dir():
+            continue
+
+        direct = root / file_name
+        if direct.exists():
+            key = str(direct.resolve())
+            if key not in seen:
+                discovered.append(direct)
+                seen.add(key)
+
+        # Recursive fallback for Kaggle slug/path variations.
+        for match in root.rglob(file_name):
+            key = str(match.resolve())
+            if key not in seen:
+                discovered.append(match)
+                seen.add(key)
+
+    if discovered:
+        return _choose_best_ratings_file(dataset_name, discovered)
+
+    checked_roots = [str(p) for p in roots]
     raise FileNotFoundError(
-        f"Could not find ratings file for {dataset_name}. Checked: {candidates}"
+        f"Could not find ratings file for {dataset_name}. "
+        f"Searched roots={checked_roots} for '{file_name}'."
     )
 
 
@@ -212,6 +287,7 @@ def build_public_input_file(
     data_subset: float | None = None,
 ) -> Path:
     ratings_file = _resolve_ratings_file(dataset_name=dataset_name, raw_dir=raw_dir)
+    print(f"Using ratings source file: {ratings_file}")
 
     if _normalize_dataset_name(dataset_name) == "movielens-1m":
         df = pd.read_csv(

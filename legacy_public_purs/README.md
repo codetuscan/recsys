@@ -46,9 +46,13 @@ python legacy_public_purs/train_public_style.py \
 
 Optional flags:
 
+- `--raw-dir data/raw/ml-1m` when you already copied files into the repo workspace.
 - `--raw-dir /kaggle/input/movielens-1m` if dataset path differs.
 - `--dataset-name movielens-1m` or `movielens-32m`.
 - `--data-path /path/to/test.txt` to skip auto-conversion.
+
+If `--raw-dir` is omitted, the script also performs a recursive search across common
+Kaggle and workspace directories for the ratings file.
 
 ## Outputs
 
