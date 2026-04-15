@@ -34,6 +34,7 @@ pip install -q -r legacy_public_purs/requirements-kaggle-legacy.txt
 ```
 
 This requirement set is pinned for modern Kaggle Python (3.12-compatible TensorFlow).
+If a preinstalled JAX package causes an ml_dtypes conflict, the trainer auto-removes JAX/JAXLIB and retries TensorFlow import.
 
 4. Run training using your existing config:
 

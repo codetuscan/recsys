@@ -8,19 +8,51 @@ history_length, seed, threshold).
 import argparse
 import json
 import random
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import tensorflow as tf
 import yaml
 
-from model_public_tf_compat import Model
+
+def _import_tensorflow_with_jax_fallback():
+    """Import TensorFlow and auto-recover from JAX/ml_dtypes conflicts on Kaggle."""
+    try:
+        import tensorflow as tf_mod
+
+        return tf_mod
+    except Exception as exc:
+        message = str(exc)
+        if "JAX requires ml_dtypes version" not in message:
+            raise
+
+        print(
+            "Detected JAX/ml_dtypes conflict while importing TensorFlow. "
+            "Removing optional JAX packages and retrying..."
+        )
+        subprocess.run(
+            [sys.executable, "-m", "pip", "uninstall", "-y", "jax", "jaxlib"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        for module_name in list(sys.modules):
+            if module_name.startswith("jax") or module_name.startswith("tensorflow"):
+                sys.modules.pop(module_name, None)
+
+        import tensorflow as tf_mod
+
+        return tf_mod
 
 
+tf = _import_tensorflow_with_jax_fallback()
 tf1 = tf.compat.v1
+
+from model_public_tf_compat import Model
 
 
 class DataInput:
